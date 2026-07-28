@@ -6,7 +6,7 @@ ChatTalk is a vibrant, interactive Streamlit AI chat application powered by loca
 
 ## 🖼️ Interface Preview
 
-![ChatTalk Interface Preview](assets/chattalk_preview.png)
+![ChatTalk Interface Preview](assets/chattalk_glimpse.png)
 
 ---
 
