@@ -112,7 +112,12 @@ def _build_config() -> dict[str, Any]:
 
 
 def _build_fallback_config() -> dict[str, Any]:
-    api_key = _env("FALLBACK_API_KEY") or _env("GROQ_API_KEY") or _env("LLM_API_KEY")
+    api_key = (
+        _env("FALLBACK_API_KEY")
+        or _env("GROQ_API_KEY")
+        or _env("LLM_API_KEY")
+        or _env("OPENAI_API_KEY")
+    )
     provider = _env("FALLBACK_PROVIDER", "groq").lower()
     model = _env("FALLBACK_MODEL", "llama-3.1-8b-instant")
     base_url = _env("FALLBACK_BASE_URL", "https://api.groq.com").rstrip("/")
