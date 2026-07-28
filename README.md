@@ -1,101 +1,114 @@
-# ChatTalk
+# 💬 ChatTalk — Tone-Aware AI Companion
 
-ChatTalk is a Streamlit-based AI companion chat app designed to feel like a
-natural, human-like conversation partner. It detects your tone, adapts its
-style to match the mood of the conversation, and delivers a polished chat
-experience with a modern UI.
+ChatTalk is a vibrant, interactive Streamlit AI chat application powered by local LLMs (Ollama) with cloud fallback capabilities (Groq API). It detects conversation tone in real-time, adapts its persona, and streams responses through a dark glassmorphic UI.
 
-This project combines Python, Streamlit, and LLM integration to create a
-friendly and interactive assistant experience for real-time chatting.
-
-## ✨ Features
-
-- 💬 Modern chat-style interface with polished bubbles and avatars
-- 🎭 Tone-aware responses that detect moods such as playful, calm, serious,
-  energetic, sad, or angry
-- 🔁 Context-aware replies that prioritize recent conversation history
-- 🪞 Style mirroring that adjusts the assistant's tone and phrasing
-- 🧠 Local-first LLM support with Ollama, plus fallback handling
-- 🧰 Sidebar controls for model information, tone, clear/undo/export actions
-- 📋 Copy assistance for individual replies
-- 🟢 Live status indicators for connection and response mode
+---
 
 ## 🖼️ Interface Preview
 
-A glimpse of the chat experience:
+![ChatTalk Interface Preview](assets/chattalk_preview.png)
 
-![ChatTalk Interface Preview](https://via.placeholder.com/900x500.png?text=ChatTalk+Interface+Preview)
+---
 
-> Replace the image above with a real screenshot of your app once you have one.
+## ✨ Key Features
 
-## 🧱 Project structure
+- ⚡ **Real-Time Streaming**: Live word-by-word streaming responses with visual typing indicators.
+- 🎭 **Tone-Aware Persona Engine**: Detects emotional tone (excited, calm, serious, playful, sad, angry) and adapts assistant style and vocabulary automatically.
+- 🪞 **Slang & Style Mirroring**: Automatically matches the user's conversation energy and language nuances.
+- 🧠 **Dual LLM Architecture**:
+  - **Primary**: Local LLM via Ollama (`llama3.2`, `qwen2.5`, etc.).
+  - **Fallback**: OpenAI-compatible cloud API via Groq (`llama-3.1-8b-instant`) when local server is offline or deployed to the cloud.
+  - **Placeholder Safety**: Fallback placeholder mode keeps the UI functional if no network or API keys are available.
+- 💾 **Persistent Chat Storage**: Session-based history management with SQLite/JSON storage, multi-session switching, history undo, and export options.
+- 🎨 **Modern Glassmorphic UI**: Floating glass chat input, responsive sidebar, status pills, and dark mode styling.
+
+---
+
+## 📁 Project Structure
 
 ```
 ChatTalk/
-├── app.py             # Streamlit UI
-├── llm.py             # Local LLM transport (Ollama), .env loader, fallbacks
-├── prompts.py         # Tone detection, style guides, system-prompt builder
+├── app.py                 # Streamlit UI & styling
+├── llm.py                 # LLM provider routing (Ollama, Groq, Streaming, Fallback)
+├── prompts.py             # Tone detection, prompt building & style mirroring
+├── storage.py             # SQLite/JSON chat session persistence
+├── assets/
+│   └── chattalk_preview.png # Application preview screenshot
 ├── tests/
-│   ├── test_prompts.py
-│   └── test_llm.py
-├── requirements.txt
-├── pytest.ini
-├── .env.example
-├── PROMPT.md
-└── README.md
+│   ├── test_llm.py        # LLM transport & config tests
+│   ├── test_prompts.py    # Tone detection & prompt tests
+│   └── test_storage.py    # Persistence tests
+├── requirements.txt       # Project dependencies
+├── pytest.ini             # Test configuration
+├── .env.example           # Environment template
+└── README.md              # Documentation
 ```
 
-## ▶️ Running locally
+---
 
+## 🚀 Running Locally
+
+### 1. Prerequisites
+- Python 3.10+
+- [Ollama](https://ollama.com/) (for running local models such as `llama3.2` or `qwen2.5`)
+
+### 2. Setup Virtual Environment
 ```powershell
-# 1. Activate the virtual environment
+# Create & activate environment
+python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 
-# 2. Install dependencies
+# Install requirements
 pip install -r requirements.txt
-pip install pytest        # only needed to run the test suite
+pip install pytest
+```
 
-# 3. (Optional) configure an LLM — copy and edit
+### 3. Configure Environment Variables
+Copy `.env.example` to `.env`:
+```powershell
 copy .env.example .env
+```
 
-# 4. Run the app
+Edit `.env` to match your local setup:
+```env
+LLM_PROVIDER=ollama
+LLM_MODEL=llama3.2
+LLM_BASE_URL=http://localhost:11434
+
+# (Optional) Fallback for cloud deployment
+FALLBACK_PROVIDER=groq
+FALLBACK_MODEL=llama-3.1-8b-instant
+FALLBACK_API_KEY=your_groq_api_key_here
+```
+
+### 4. Run the Application
+```powershell
 streamlit run app.py
 ```
+Open [http://localhost:8501](http://localhost:8501) in your browser.
 
-The app opens on http://localhost:8501 by default.
+---
 
-## ⚙️ Environment variables
+## ☁️ Deploying to Streamlit Cloud
 
-| Var | Default | Purpose |
-|---|---|---|
-| `LLM_PROVIDER` | `ollama` | Set blank to use placeholder replies |
-| `LLM_MODEL` | `llama3.2` | Model name as the local server knows it |
-| `LLM_BASE_URL` | `http://localhost:11434` | Local chat server URL |
-| `LLM_API_KEY` | _(blank)_ | Only for hosted / non-local providers |
-| `LLM_TEMPERATURE` | `0.8` | Sampling temperature |
-| `LLM_MAX_TOKENS` | `512` | Max tokens per reply |
+When deploying to Streamlit Cloud (where local Ollama is not running), configure your Groq API key in **Streamlit Cloud -> App Settings -> Secrets**:
 
-The `.env` loader is stdlib-only — no `python-dotenv` required.
-
-## 🧪 Tests
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest
+```toml
+FALLBACK_PROVIDER = "groq"
+FALLBACK_MODEL = "llama-3.1-8b-instant"
+FALLBACK_API_KEY = "gsk_your_groq_api_key_here"
 ```
 
-40 tests cover tone detection (all labels, recency shift, edge cases), system
-prompt construction, history trimming, message assembly, and the Ollama
-transport (with mocked HTTP).
+The app will seamlessly route requests to Groq when the local Ollama server is unreachable.
 
-## 🤖 How the LLM is called
+---
 
-`llm.generate_reply(user_message, history)`:
+## 🧪 Testing
 
-1. Aggregates all user messages and detects a tone.
-2. Builds a tone-aware system prompt (persona + style + length + guard rails).
-3. Trims history to fit a 4,000-char budget.
-4. POSTs to `${LLM_BASE_URL}/api/chat` (Ollama chat API).
-5. Falls back to a placeholder if the model is unconfigured or unreachable.
+Run the full test suite with pytest:
 
-Adding another provider (e.g. llama.cpp, LM Studio, or a transformers
-pipeline) is a single switch in `llm._ollama_chat`'s sibling.
+```powershell
+pytest
+```
+
+All 62 unit tests verify tone detection, prompt generation, streaming response generation, storage persistence, and provider error handling.

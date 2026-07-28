@@ -136,7 +136,6 @@ _CSS = """
    ============================================================ */
 html, body, .stApp, [data-testid="stAppViewContainer"], 
 section.main, .main, [data-testid="stMain"], [data-testid="stMainBlockContainer"],
-[data-testid="stHeader"], [data-testid="stToolbar"],
 [data-testid="stBottom"], [data-testid="stBottom"] > div,
 .stMainBlockContainer {
     background-color: #0b0d17 !important;
@@ -152,10 +151,40 @@ section.main, .main, [data-testid="stMain"], [data-testid="stMainBlockContainer"
     min-height: 100vh !important;
 }
 
-[data-testid="stHeader"], [data-testid="stBottom"], [data-testid="stBottom"] > div {
+/* Ensure Streamlit Header & Sidebar Toggle Button are ALWAYS Visible & Clickable */
+[data-testid="stHeader"] {
     background: transparent !important;
     box-shadow: none !important;
     border: none !important;
+    z-index: 99999 !important;
+}
+
+[data-testid="stSidebarCollapseButton"],
+button[data-testid="stSidebarCollapseButton"],
+button[aria-label="Expand sidebar"],
+button[aria-label="Collapse sidebar"],
+button[data-testid="baseButton-header"],
+[data-testid="stHeader"] button {
+    visibility: visible !important;
+    display: flex !important;
+    opacity: 1 !important;
+    color: #ffffff !important;
+    background: #1a1d35 !important;
+    border: 1px solid #252845 !important;
+    border-radius: 10px !important;
+    z-index: 999999 !important;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3) !important;
+    transition: all 0.2s ease !important;
+}
+
+[data-testid="stSidebarCollapseButton"]:hover,
+button[aria-label="Expand sidebar"]:hover,
+button[aria-label="Collapse sidebar"]:hover,
+button[data-testid="baseButton-header"]:hover {
+    background: #6366f1 !important;
+    color: #ffffff !important;
+    border-color: #6366f1 !important;
+    transform: scale(1.05) !important;
 }
 
 .block-container {
@@ -168,8 +197,8 @@ h1, h2, h3, h4, p, span, div, li, label {
     color: var(--text-primary);
 }
 
-/* Hide Streamlit elements */
-#MainMenu, footer, header [data-testid="stToolbar"] {
+/* Hide Streamlit default top right menu & footer but keep header buttons */
+#MainMenu, footer, [data-testid="stToolbar"] {
     visibility: hidden;
 }
 

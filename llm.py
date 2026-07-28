@@ -99,21 +99,28 @@ def _env_int(name: str, default: int) -> int:
 # ---------------------------------------------------------------------------
 
 def _build_config() -> dict[str, Any]:
+    provider = _env("LLM_PROVIDER", "ollama").lower()
+    model = _env("LLM_MODEL", "llama3.2")
+    base_url = _env("LLM_BASE_URL", "http://localhost:11434").rstrip("/")
     return {
-        "provider": _env("LLM_PROVIDER").lower(),
-        "model": _env("LLM_MODEL"),
-        "base_url": _env("LLM_BASE_URL").rstrip("/"),
+        "provider": provider,
+        "model": model,
+        "base_url": base_url,
         "temperature": _env_float("LLM_TEMPERATURE", 0.8),
         "max_tokens": _env_int("LLM_MAX_TOKENS", 512),
     }
 
 
 def _build_fallback_config() -> dict[str, Any]:
+    api_key = _env("FALLBACK_API_KEY") or _env("GROQ_API_KEY") or _env("LLM_API_KEY")
+    provider = _env("FALLBACK_PROVIDER", "groq").lower()
+    model = _env("FALLBACK_MODEL", "llama-3.1-8b-instant")
+    base_url = _env("FALLBACK_BASE_URL", "https://api.groq.com").rstrip("/")
     return {
-        "provider": _env("FALLBACK_PROVIDER").lower(),
-        "model": _env("FALLBACK_MODEL"),
-        "base_url": _env("FALLBACK_BASE_URL").rstrip("/"),
-        "api_key": _env("FALLBACK_API_KEY"),
+        "provider": provider,
+        "model": model,
+        "base_url": base_url,
+        "api_key": api_key,
         "temperature": _env_float("LLM_TEMPERATURE", 0.8),
         "max_tokens": _env_int("LLM_MAX_TOKENS", 512),
     }
