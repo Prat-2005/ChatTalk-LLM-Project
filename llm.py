@@ -60,10 +60,33 @@ def _env(name: str, default: str = "") -> str:
         return value.strip()
     try:
         import streamlit as st
-        if hasattr(st, "secrets") and name in st.secrets:
-            sec_val = str(st.secrets[name])
-            if sec_val and sec_val.strip() != "":
-                return sec_val.strip()
+        if hasattr(st, "secrets") and st.secrets is not None:
+            # Direct key lookups (exact, lower, upper)
+            for key in (name, name.lower(), name.upper()):
+                try:
+                    if key in st.secrets:
+                        val = str(st.secrets[key])
+                        if val and val.strip() != "":
+                            return val.strip()
+                except Exception:
+                    pass
+
+            # Nested TOML section lookups e.g. st.secrets["groq"]["api_key"]
+            try:
+                for sec_name in ("groq", "fallback", "llm", "primary"):
+                    if sec_name in st.secrets:
+                        sec = st.secrets[sec_name]
+                        if isinstance(sec, dict) or hasattr(sec, "__getitem__"):
+                            for key in (name, name.lower(), name.upper(), "api_key", "key", "model", "provider"):
+                                try:
+                                    if key in sec:
+                                        val = str(sec[key])
+                                        if val and val.strip() != "":
+                                            return val.strip()
+                                except Exception:
+                                    pass
+            except Exception:
+                pass
     except Exception:
         pass
     return default
@@ -320,8 +343,8 @@ def generate_reply_stream(
     primary: dict[str, Any] | None = None,
     fallback: dict[str, Any] | None = None,
 ):
-    primary = primary or CONFIG
-    fallback = fallback or FALLBACK_CONFIG
+    primary = primary if primary is not None else _build_config()
+    fallback = fallback if fallback is not None else _build_fallback_config()
 
     if not user_message or not user_message.strip():
         result_info["provider"] = "placeholder"
@@ -388,8 +411,8 @@ def generate_reply(
 
 def get_config() -> dict[str, Any]:
     return {
-        "primary": dict(CONFIG),
-        "fallback": dict(FALLBACK_CONFIG),
+        "primary": _build_config(),
+        "fallback": _build_fallback_config(),
     }
 
 
