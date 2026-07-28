@@ -7,15 +7,8 @@ Provider chain:
     3) If everything fails, return a placeholder reply so the UI stays usable.
 
 The fallback uses Groq's OpenAI-compatible `/chat/completions` HTTP shape, so
-the transport stays simple and does not depend on the `groq` SDK. The same
-request format also matches most OpenAI-compatible gateways, but the provider
-name in this project is kept as `groq` to match what you actually configured.
+the transport stays simple and does not depend on the `groq` SDK.
 Authentication uses `FALLBACK_API_KEY`.
-
-Each provider builds a message list compatible with the OpenAI-style
-`{role, content}` schema, which both transports already speak natively.
-
-If no LLM is configured at all, the placeholder path is used directly.
 """
 
 from __future__ import annotations
@@ -38,7 +31,7 @@ from prompts import (
 
 
 # ---------------------------------------------------------------------------
-# .env loader (stdlib-only)
+# .env and Secrets loader
 # ---------------------------------------------------------------------------
 
 def _load_dotenv(path: str | os.PathLike = ".env") -> None:
@@ -65,22 +58,53 @@ def _load_dotenv(path: str | os.PathLike = ".env") -> None:
 _load_dotenv()
 
 
+def _env(name: str, default: str = "") -> str:
+    """Retrieve environment variable from os.environ or streamlit.secrets."""
+    value = os.environ.get(name)
+    if value is not None and value.strip() != "":
+        return value.strip()
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets") and name in st.secrets:
+            sec_val = str(st.secrets[name])
+            if sec_val and sec_val.strip() != "":
+                return sec_val.strip()
+    except Exception:
+        pass
+    return default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = _env(name)
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+    return default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = _env(name)
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            pass
+    return default
+
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-
-def _env(name: str, default: str = "") -> str:
-    value = os.environ.get(name)
-    return value if value is not None else default
-
 
 def _build_config() -> dict[str, Any]:
     return {
         "provider": _env("LLM_PROVIDER").lower(),
         "model": _env("LLM_MODEL"),
         "base_url": _env("LLM_BASE_URL").rstrip("/"),
-        "temperature": float(_env("LLM_TEMPERATURE")),
-        "max_tokens": int(_env("LLM_MAX_TOKENS")),
+        "temperature": _env_float("LLM_TEMPERATURE", 0.8),
+        "max_tokens": _env_int("LLM_MAX_TOKENS", 512),
     }
 
 
@@ -90,8 +114,8 @@ def _build_fallback_config() -> dict[str, Any]:
         "model": _env("FALLBACK_MODEL"),
         "base_url": _env("FALLBACK_BASE_URL").rstrip("/"),
         "api_key": _env("FALLBACK_API_KEY"),
-        "temperature": float(_env("LLM_TEMPERATURE")),
-        "max_tokens": int(_env("LLM_MAX_TOKENS")),
+        "temperature": _env_float("LLM_TEMPERATURE", 0.8),
+        "max_tokens": _env_int("LLM_MAX_TOKENS", 512),
     }
 
 
@@ -112,12 +136,12 @@ def _placeholder_reply(user_message: str) -> str:
     return (
         f"(placeholder) You said: \"{preview}\". "
         f"No LLM provider is reachable right now — set LLM_PROVIDER / "
-        f"FALLBACK_API_KEY in your .env."
+        f"FALLBACK_API_KEY in your environment or Streamlit Secrets."
     )
 
 
 # ---------------------------------------------------------------------------
-# Ollama transport
+# Transports
 # ---------------------------------------------------------------------------
 
 class ProviderError(RuntimeError):
@@ -151,7 +175,6 @@ def _ollama_chat(messages: list[dict], cfg: dict[str, Any]) -> str:
     except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
         raise ProviderError(f"Ollama unreachable: {exc}") from exc
     except urllib.error.HTTPError as exc:
-        # 4xx / 5xx — treat as a provider failure so we can fall back.
         raise ProviderError(f"Ollama HTTP {exc.code}: {exc.reason}") from exc
 
     try:
@@ -163,11 +186,6 @@ def _ollama_chat(messages: list[dict], cfg: dict[str, Any]) -> str:
     if not content:
         raise ProviderError("Ollama returned an empty response")
     return content
-
-
-# ---------------------------------------------------------------------------
-# Groq transport (OpenAI-compatible wire format)
-# ---------------------------------------------------------------------------
 
 
 def _chat_completions_request(
@@ -192,12 +210,10 @@ def _chat_completions_request(
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
-        # Pull the error body if the server provided one — it's far more
-        # useful than the bare status line.
         detail = ""
         try:
             detail = exc.read().decode("utf-8", errors="replace")
-        except Exception:  # pragma: no cover - best effort
+        except Exception:
             pass
         raise ProviderError(
             f"Fallback HTTP {exc.code}: {exc.reason}"
@@ -216,10 +232,7 @@ def _groq_chat(messages: list[dict], cfg: dict[str, Any]) -> str:
     """Call Groq's OpenAI-compatible `/chat/completions` endpoint."""
     api_key = cfg.get("api_key") or ""
     if not api_key:
-        raise ProviderError(
-            "FALLBACK_API_KEY is not set — the Groq fallback needs it to call "
-            "the OpenAI-compatible endpoint."
-        )
+        raise ProviderError("FALLBACK_API_KEY is not set.")
 
     base_url = cfg["base_url"].rstrip("/")
     if not base_url.endswith("/openai/v1"):
@@ -233,7 +246,6 @@ def _groq_chat(messages: list[dict], cfg: dict[str, Any]) -> str:
     }
     parsed = _chat_completions_request(url, payload, api_key, timeout=20)
 
-    # Standard OpenAI shape: choices[0].message.content
     choices = parsed.get("choices") or []
     if not choices:
         raise ProviderError("Fallback returned no choices")
@@ -349,6 +361,14 @@ def _groq_chat_stream(messages: list[dict], cfg: dict[str, Any]):
         resp.close()
 
 
+def _resolve_handler(provider: str):
+    if provider == "ollama":
+        return _ollama_chat
+    if provider == "groq":
+        return _groq_chat
+    return None
+
+
 def _resolve_stream_handler(provider: str):
     if provider == "ollama":
         return _ollama_chat_stream
@@ -358,25 +378,7 @@ def _resolve_stream_handler(provider: str):
 
 
 # ---------------------------------------------------------------------------
-# Provider registry
-# ---------------------------------------------------------------------------
-
-# We resolve provider handlers lazily through the module globals so that
-# tests can monkeypatch `llm._ollama_chat` / `llm._groq_chat` and
-# have those changes take effect here.
-PROVIDER_NAMES = ("ollama", "groq")
-
-
-def _resolve_handler(provider: str):
-    if provider == "ollama":
-        return _ollama_chat
-    if provider == "groq":
-        return _groq_chat
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Public entry point — primary, then fallback, then placeholder
+# Public API
 # ---------------------------------------------------------------------------
 
 def _detect_tone_for(history: list[dict], current: str) -> ToneSignal:
@@ -411,7 +413,6 @@ def _try_provider(
     cfg: dict[str, Any],
     messages: list[dict],
 ) -> str:
-    """Run one provider, raising ProviderError on any failure."""
     handler = _resolve_handler(cfg["provider"])
     if handler is None:
         raise ProviderError(f"Unknown provider: {cfg['provider']!r}")
@@ -425,17 +426,6 @@ def generate_reply(
     primary: dict[str, Any] | None = None,
     fallback: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
-    """Return ``(reply_text, provider_label)``.
-
-    The label is one of ``"primary"``, ``"fallback"``, or ``"placeholder"`` so
-    the UI can tag each assistant bubble with the right pill without
-    inspecting the text.
-
-    Order:
-      1) primary provider (if configured)
-      2) fallback provider (if configured)
-      3) placeholder
-    """
     primary = primary or CONFIG
     fallback = fallback or FALLBACK_CONFIG
 
@@ -445,26 +435,18 @@ def generate_reply(
     tone = _detect_tone_for(history, user_message)
     messages = _build_messages_for_llm(user_message, history, tone=tone)
 
-    last_err: Exception | None = None
-    tried: list[str] = []
-
     if _is_configured(primary):
-        tried.append(primary["provider"])
         try:
             return _try_provider(primary, messages), "primary"
         except ProviderError as exc:
             print(f"[ChatTalk] Primary ({primary['provider']}) failed: {exc}")
-            last_err = exc
 
     if _is_configured(fallback):
-        tried.append(fallback["provider"])
         try:
             return _try_provider(fallback, messages), "fallback"
         except ProviderError as exc:
             print(f"[ChatTalk] Fallback ({fallback['provider']}) failed: {exc}")
-            last_err = exc
 
-    # All providers failed or none configured.
     return _placeholder_reply(user_message), "placeholder"
 
 
@@ -475,7 +457,6 @@ def generate_reply_stream(
     primary: dict[str, Any] | None = None,
     fallback: dict[str, Any] | None = None,
 ):
-    """Yield reply text chunks with real streaming. Stores provider in result_info["provider"]."""
     primary = primary or CONFIG
     fallback = fallback or FALLBACK_CONFIG
 
@@ -512,7 +493,6 @@ def generate_reply_stream(
 
 
 def get_config() -> dict[str, Any]:
-    """Return primary + fallback configuration (handy for the UI)."""
     return {
         "primary": dict(CONFIG),
         "fallback": dict(FALLBACK_CONFIG),
@@ -520,12 +500,10 @@ def get_config() -> dict[str, Any]:
 
 
 def get_last_tone(history: list[dict], current: str = "") -> ToneSignal:
-    """Expose tone detection for the UI (e.g. showing a small label)."""
     return _detect_tone_for(history, current)
 
 
 def reload_config() -> None:
-    """Re-read env vars. Useful in tests and for live config tweaks."""
     global CONFIG, FALLBACK_CONFIG
     _load_dotenv()
     CONFIG = _build_config()
@@ -535,7 +513,6 @@ def reload_config() -> None:
 __all__ = [
     "CONFIG",
     "FALLBACK_CONFIG",
-    "PROVIDER_NAMES",
     "ProviderError",
     "generate_reply",
     "generate_reply_stream",
