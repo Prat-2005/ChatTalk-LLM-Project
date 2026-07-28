@@ -343,8 +343,8 @@ def generate_reply_stream(
     primary: dict[str, Any] | None = None,
     fallback: dict[str, Any] | None = None,
 ):
-    primary = primary if primary is not None else _build_config()
-    fallback = fallback if fallback is not None else _build_fallback_config()
+    primary = primary or (CONFIG if CONFIG.get("provider") != "ollama" or os.environ.get("LLM_PROVIDER") else _build_config())
+    fallback = fallback or (FALLBACK_CONFIG if FALLBACK_CONFIG.get("api_key") or os.environ.get("FALLBACK_API_KEY") else _build_fallback_config())
 
     if not user_message or not user_message.strip():
         result_info["provider"] = "placeholder"
