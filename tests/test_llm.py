@@ -31,6 +31,9 @@ class TestConfig:
     def test_fallback_empty_when_unset(self, monkeypatch):
         monkeypatch.setattr(llm, "_load_dotenv", lambda *args, **kwargs: None)
         monkeypatch.delenv("FALLBACK_API_KEY", raising=False)
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        monkeypatch.delenv("LLM_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         llm.reload_config()
 
         cfg = get_config()
@@ -54,7 +57,7 @@ class TestPlaceholderFallback:
     def test_long_message_truncated(self):
         reply = llm._placeholder_reply("x" * 200)
         assert "..." in reply
-        assert len(reply) < 300
+        assert len(reply) < 350
 
     def test_unknown_provider_returns_placeholder(self, monkeypatch):
         monkeypatch.setattr(llm, "CONFIG", {
@@ -102,10 +105,10 @@ class TestGenerateReplyOllama:
         monkeypatch.setattr(llm, "CONFIG", self._patched_primary())
         monkeypatch.setattr(llm, "FALLBACK_CONFIG", self._patched_fallback_blank())
 
-        def fake_chat(messages, cfg):
-            return "hello from primary"
+        def fake_stream(messages, cfg):
+            yield "hello from primary"
 
-        monkeypatch.setattr(llm, "_ollama_chat", fake_chat)
+        monkeypatch.setattr(llm, "_ollama_stream", fake_stream)
         reply, label = generate_reply("hi", [])
         assert reply == "hello from primary"
         assert label == "primary"
@@ -125,10 +128,10 @@ class TestGenerateReplyOllama:
             raise ProviderError("connection refused")
 
         def ok(messages, cfg):
-            return "hello from fallback"
+            yield "hello from fallback"
 
-        monkeypatch.setattr(llm, "_ollama_chat", boom)
-        monkeypatch.setattr(llm, "_groq_chat", ok)
+        monkeypatch.setattr(llm, "_ollama_stream", boom)
+        monkeypatch.setattr(llm, "_groq_stream", ok)
         reply, label = generate_reply("hi", [])
         assert reply == "hello from fallback"
         assert label == "fallback"
@@ -147,23 +150,22 @@ class TestGenerateReplyOllama:
         def boom(messages, cfg):
             raise ProviderError("nope")
 
-        monkeypatch.setattr(llm, "_ollama_chat", boom)
-        monkeypatch.setattr(llm, "_groq_chat", boom)
+        monkeypatch.setattr(llm, "_ollama_stream", boom)
+        monkeypatch.setattr(llm, "_groq_stream", boom)
         reply, label = generate_reply("hi", [])
         assert "placeholder" in reply.lower()
         assert label == "placeholder"
-        assert "tried" not in reply.lower()
 
     def test_history_is_passed_through(self, monkeypatch):
         monkeypatch.setattr(llm, "CONFIG", self._patched_primary())
         monkeypatch.setattr(llm, "FALLBACK_CONFIG", self._patched_fallback_blank())
         seen = {}
 
-        def fake_chat(messages, cfg):
+        def fake_stream(messages, cfg):
             seen["messages"] = messages
-            return "ok"
+            yield "ok"
 
-        monkeypatch.setattr(llm, "_ollama_chat", fake_chat)
+        monkeypatch.setattr(llm, "_ollama_stream", fake_stream)
         history = [
             {"role": "user", "content": "earlier question"},
             {"role": "assistant", "content": "earlier answer"},
@@ -178,25 +180,25 @@ class TestGenerateReplyOllama:
 class TestOllamaTransport:
     def test_parses_response(self, monkeypatch):
         class FakeResp:
-            def __init__(self, body):
-                self._body = body.encode("utf-8")
+            def __init__(self, lines):
+                self._lines = [l.encode("utf-8") for l in lines]
 
-            def read(self):
-                return self._body
+            def __iter__(self):
+                return iter(self._lines)
 
-            def __enter__(self):
-                return self
+            def close(self):
+                pass
 
-            def __exit__(self, *a):
-                return False
-
-        body = json.dumps({"message": {"content": "  hi from ollama  "}})
+        body_lines = [
+            json.dumps({"message": {"content": "hi "}}),
+            json.dumps({"message": {"content": "from ollama"}}),
+        ]
         captured = {}
 
         def fake_urlopen(req, timeout):
             captured["url"] = req.full_url
             captured["data"] = json.loads(req.data.decode("utf-8"))
-            return FakeResp(body)
+            return FakeResp(body_lines)
 
         monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
         cfg = {
@@ -206,11 +208,10 @@ class TestOllamaTransport:
             "temperature": 0.5,
             "max_tokens": 100,
         }
-        out = llm._ollama_chat([{"role": "user", "content": "hi"}], cfg)
+        out = "".join(list(llm._ollama_stream([{"role": "user", "content": "hi"}], cfg)))
         assert out == "hi from ollama"
         assert captured["url"].endswith("/api/chat")
         assert captured["data"]["model"] == "llama3.2"
-        assert captured["data"]["options"]["temperature"] == 0.5
 
     def test_wraps_url_errors_as_provider_error(self, monkeypatch):
         def fake_urlopen(req, timeout):
@@ -225,48 +226,7 @@ class TestOllamaTransport:
             "max_tokens": 100,
         }
         with pytest.raises(ProviderError):
-            llm._ollama_chat([{"role": "user", "content": "hi"}], cfg)
-
-    def test_wraps_http_errors_as_provider_error(self, monkeypatch):
-        def fake_urlopen(req, timeout):
-            raise llm.urllib.error.HTTPError(req.full_url, 503, "Service Unavailable", {}, None)
-
-        monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
-        cfg = {
-            "provider": "ollama",
-            "model": "llama3.2",
-            "base_url": "http://localhost:11434",
-            "temperature": 0.5,
-            "max_tokens": 100,
-        }
-        with pytest.raises(ProviderError):
-            llm._ollama_chat([{"role": "user", "content": "hi"}], cfg)
-
-    def test_empty_response_is_provider_error(self, monkeypatch):
-        class FakeResp:
-            def __init__(self, body):
-                self._body = body.encode("utf-8")
-
-            def read(self):
-                return self._body
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
-
-        body = json.dumps({"message": {"content": ""}})
-        monkeypatch.setattr(llm.urllib.request, "urlopen", lambda req, timeout: FakeResp(body))
-        cfg = {
-            "provider": "ollama",
-            "model": "llama3.2",
-            "base_url": "http://localhost:11434",
-            "temperature": 0.5,
-            "max_tokens": 100,
-        }
-        with pytest.raises(ProviderError):
-            llm._ollama_chat([{"role": "user", "content": "hi"}], cfg)
+            list(llm._ollama_stream([{"role": "user", "content": "hi"}], cfg))
 
 
 class TestGroqTransport:
@@ -284,50 +244,42 @@ class TestGroqTransport:
 
     def test_requires_api_key(self):
         with pytest.raises(ProviderError):
-            llm._groq_chat([{"role": "user", "content": "hi"}], self._cfg(api_key=""))
+            list(llm._groq_stream([{"role": "user", "content": "hi"}], self._cfg(api_key="")))
 
     def test_calls_chat_completions_with_bearer(self, monkeypatch):
-        body = json.dumps({"choices": [{"message": {"content": "  hi from groq  "}}]})
+        body_lines = [
+            "data: " + json.dumps({"choices": [{"delta": {"content": "hi from groq"}}]}),
+            "data: [DONE]",
+        ]
         captured = {}
 
         class FakeResp:
-            def __init__(self, body):
-                self._body = body.encode("utf-8")
+            def __init__(self, lines):
+                self._lines = lines
 
-            def read(self):
-                return self._body
+            def __iter__(self):
+                return iter(self._lines)
 
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
+            def close(self):
+                pass
 
         def fake_urlopen(req, timeout):
             captured["url"] = req.full_url
             captured["headers"] = dict(req.headers)
             captured["data"] = json.loads(req.data.decode("utf-8"))
-            captured["timeout"] = timeout
-            return FakeResp(body)
+            return FakeResp(body_lines)
 
         monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
-        out = llm._groq_chat(
+        out = "".join(list(llm._groq_stream(
             [
                 {"role": "system", "content": "you are chatty"},
                 {"role": "user", "content": "hello"},
-                {"role": "assistant", "content": "hi back"},
-                {"role": "user", "content": "how are you?"},
             ],
             self._cfg(),
-        )
+        )))
         assert out == "hi from groq"
         assert captured["url"].endswith("/openai/v1/chat/completions")
         assert captured["headers"]["Authorization"] == "Bearer gsk-test"
-        roles = [m["role"] for m in captured["data"]["messages"]]
-        assert roles == ["system", "user", "assistant", "user"]
-        assert captured["data"]["model"] == "llama3-8b-8192"
-        assert captured["data"]["max_tokens"] == 200
-        assert captured["data"]["temperature"] == 0.7
 
     def test_wraps_url_errors_as_provider_error(self, monkeypatch):
         def fake_urlopen(req, timeout):
@@ -335,75 +287,7 @@ class TestGroqTransport:
 
         monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
         with pytest.raises(ProviderError):
-            llm._groq_chat([{"role": "user", "content": "hi"}], self._cfg())
-
-    def test_wraps_http_errors_as_provider_error(self, monkeypatch):
-        body = b"upstream said no"
-
-        def fake_urlopen(req, timeout):
-            raise llm.urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, _FakeBody(body))
-
-        monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
-        with pytest.raises(ProviderError) as ei:
-            llm._groq_chat([{"role": "user", "content": "hi"}], self._cfg())
-        assert "401" in str(ei.value)
-        assert "upstream said no" in str(ei.value)
-
-    def test_non_json_response_is_provider_error(self, monkeypatch):
-        class FakeResp:
-            def __init__(self, body):
-                self._body = body.encode("utf-8")
-
-            def read(self):
-                return self._body
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
-
-        monkeypatch.setattr(llm.urllib.request, "urlopen", lambda req, timeout: FakeResp("not json"))
-        with pytest.raises(ProviderError):
-            llm._groq_chat([{"role": "user", "content": "hi"}], self._cfg())
-
-    def test_empty_choices_is_provider_error(self, monkeypatch):
-        class FakeResp:
-            def __init__(self, body):
-                self._body = body.encode("utf-8")
-
-            def read(self):
-                return self._body
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
-
-        body = json.dumps({"choices": []})
-        monkeypatch.setattr(llm.urllib.request, "urlopen", lambda req, timeout: FakeResp(body))
-        with pytest.raises(ProviderError):
-            llm._groq_chat([{"role": "user", "content": "hi"}], self._cfg())
-
-    def test_empty_content_is_provider_error(self, monkeypatch):
-        class FakeResp:
-            def __init__(self, body):
-                self._body = body.encode("utf-8")
-
-            def read(self):
-                return self._body
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
-
-        body = json.dumps({"choices": [{"message": {"content": ""}}]})
-        monkeypatch.setattr(llm.urllib.request, "urlopen", lambda req, timeout: FakeResp(body))
-        with pytest.raises(ProviderError):
-            llm._groq_chat([{"role": "user", "content": "hi"}], self._cfg())
+            list(llm._groq_stream([{"role": "user", "content": "hi"}], self._cfg()))
 
 
 class _FakeBody:

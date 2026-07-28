@@ -2,13 +2,8 @@
 
 Provider chain:
     1) Primary provider (LLM_PROVIDER, default `ollama`).
-    2) If it raises (timeout, connection error, HTTP error), try the
-         fallback provider (FALLBACK_PROVIDER, default `groq`).
-    3) If everything fails, return a placeholder reply so the UI stays usable.
-
-The fallback uses Groq's OpenAI-compatible `/chat/completions` HTTP shape, so
-the transport stays simple and does not depend on the `groq` SDK.
-Authentication uses `FALLBACK_API_KEY`.
+    2) If primary fails, try fallback provider (FALLBACK_PROVIDER, default `groq`).
+    3) If everything fails, return an informative error placeholder reply.
 """
 
 from __future__ import annotations
@@ -18,7 +13,7 @@ import os
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Generator
 
 from prompts import (
     DEFAULT_TONE,
@@ -136,24 +131,7 @@ FALLBACK_CONFIG: dict[str, Any] = _build_fallback_config()
 
 
 # ---------------------------------------------------------------------------
-# Placeholder fallback
-# ---------------------------------------------------------------------------
-
-def _placeholder_reply(user_message: str) -> str:
-    if not user_message or not user_message.strip():
-        return "I didn't catch that — say it again?"
-    preview = user_message.strip()
-    if len(preview) > 60:
-        preview = preview[:57] + "..."
-    return (
-        f"(placeholder) You said: \"{preview}\". "
-        f"No LLM provider is reachable right now — set LLM_PROVIDER / "
-        f"FALLBACK_API_KEY in your environment or Streamlit Secrets."
-    )
-
-
-# ---------------------------------------------------------------------------
-# Transports
+# Transports & Exceptions
 # ---------------------------------------------------------------------------
 
 class ProviderError(RuntimeError):
@@ -163,12 +141,30 @@ class ProviderError(RuntimeError):
 _USER_AGENT = "ChatTalk/1.0"
 
 
-def _ollama_chat(messages: list[dict], cfg: dict[str, Any]) -> str:
+def _placeholder_reply(user_message: str, errors: list[str] | None = None) -> str:
+    if not user_message or not user_message.strip():
+        return "I didn't catch that — say it again?"
+    preview = user_message.strip()
+    if len(preview) > 60:
+        preview = preview[:57] + "..."
+
+    err_details = ""
+    if errors:
+        err_details = "\n\n**Diagnostic Details:**\n" + "\n".join(f"- {e}" for e in errors)
+
+    return (
+        f"(placeholder) You said: \"{preview}\".\n"
+        f"No LLM provider generated a response. Check your environment settings or Streamlit Secrets."
+        f"{err_details}"
+    )
+
+
+def _ollama_stream(messages: list[dict], cfg: dict[str, Any]) -> Generator[str, None, None]:
     url = f"{cfg['base_url']}/api/chat"
     payload = {
         "model": cfg["model"],
         "messages": messages,
-        "stream": False,
+        "stream": True,
         "options": {
             "temperature": cfg["temperature"],
             "num_predict": cfg["max_tokens"],
@@ -182,31 +178,50 @@ def _ollama_chat(messages: list[dict], cfg: dict[str, Any]) -> str:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            body = resp.read().decode("utf-8")
+        resp = urllib.request.urlopen(req, timeout=30)
     except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
         raise ProviderError(f"Ollama unreachable: {exc}") from exc
     except urllib.error.HTTPError as exc:
         raise ProviderError(f"Ollama HTTP {exc.code}: {exc.reason}") from exc
 
     try:
-        parsed = json.loads(body)
-    except json.JSONDecodeError as exc:
-        raise ProviderError(f"Ollama returned non-JSON: {exc}") from exc
+        has_content = False
+        for line in resp:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                chunk = json.loads(line)
+                content = (chunk.get("message") or {}).get("content", "")
+                if content:
+                    has_content = True
+                    yield content
+                if chunk.get("done"):
+                    break
+            except json.JSONDecodeError:
+                pass
+        if not has_content:
+            raise ProviderError("Ollama returned an empty response")
+    finally:
+        resp.close()
 
-    content = (parsed.get("message") or {}).get("content", "").strip()
-    if not content:
-        raise ProviderError("Ollama returned an empty response")
-    return content
 
+def _groq_stream(messages: list[dict], cfg: dict[str, Any]) -> Generator[str, None, None]:
+    api_key = cfg.get("api_key") or ""
+    if not api_key:
+        raise ProviderError("FALLBACK_API_KEY / GROQ_API_KEY is not set.")
 
-def _chat_completions_request(
-    url: str,
-    payload: dict,
-    api_key: str,
-    timeout: float,
-) -> dict:
-    """POST `payload` to `url` with bearer auth, return parsed JSON."""
+    base_url = cfg["base_url"].rstrip("/")
+    if not base_url.endswith("/openai/v1"):
+        base_url = f"{base_url}/openai/v1"
+    url = f"{base_url}/chat/completions"
+    payload = {
+        "model": cfg["model"],
+        "messages": messages,
+        "temperature": cfg["temperature"],
+        "max_tokens": cfg["max_tokens"],
+        "stream": True,
+    }
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -219,8 +234,7 @@ def _chat_completions_request(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode("utf-8")
+        resp = urllib.request.urlopen(req, timeout=30)
     except urllib.error.HTTPError as exc:
         detail = ""
         try:
@@ -235,124 +249,7 @@ def _chat_completions_request(
         raise ProviderError(f"Fallback unreachable: {exc}") from exc
 
     try:
-        return json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ProviderError(f"Fallback returned non-JSON: {exc}") from exc
-
-
-def _groq_chat(messages: list[dict], cfg: dict[str, Any]) -> str:
-    """Call Groq's OpenAI-compatible `/chat/completions` endpoint."""
-    api_key = cfg.get("api_key") or ""
-    if not api_key:
-        raise ProviderError("FALLBACK_API_KEY is not set.")
-
-    base_url = cfg["base_url"].rstrip("/")
-    if not base_url.endswith("/openai/v1"):
-        base_url = f"{base_url}/openai/v1"
-    url = f"{base_url}/chat/completions"
-    payload = {
-        "model": cfg["model"],
-        "messages": messages,
-        "temperature": cfg["temperature"],
-        "max_tokens": cfg["max_tokens"],
-    }
-    parsed = _chat_completions_request(url, payload, api_key, timeout=20)
-
-    choices = parsed.get("choices") or []
-    if not choices:
-        raise ProviderError("Fallback returned no choices")
-    content = (choices[0].get("message") or {}).get("content", "").strip()
-    if not content:
-        raise ProviderError("Fallback returned an empty response")
-    return content
-
-
-def _ollama_chat_stream(messages: list[dict], cfg: dict[str, Any]):
-    url = f"{cfg['base_url']}/api/chat"
-    payload = {
-        "model": cfg["model"],
-        "messages": messages,
-        "stream": True,
-        "options": {
-            "temperature": cfg["temperature"],
-            "num_predict": cfg["max_tokens"],
-        },
-    }
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={"Content-Type": "application/json", "User-Agent": _USER_AGENT},
-        method="POST",
-    )
-    try:
-        resp = urllib.request.urlopen(req, timeout=30)
-    except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
-        raise ProviderError(f"Ollama stream unreachable: {exc}") from exc
-    except urllib.error.HTTPError as exc:
-        raise ProviderError(f"Ollama stream HTTP {exc.code}: {exc.reason}") from exc
-
-    try:
-        for line in resp:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                chunk = json.loads(line)
-                content = (chunk.get("message") or {}).get("content", "")
-                if content:
-                    yield content
-                if chunk.get("done"):
-                    break
-            except json.JSONDecodeError:
-                pass
-    finally:
-        resp.close()
-
-
-def _groq_chat_stream(messages: list[dict], cfg: dict[str, Any]):
-    api_key = cfg.get("api_key") or ""
-    if not api_key:
-        raise ProviderError("FALLBACK_API_KEY is not set for stream.")
-
-    base_url = cfg["base_url"].rstrip("/")
-    if not base_url.endswith("/openai/v1"):
-        base_url = f"{base_url}/openai/v1"
-    url = f"{base_url}/chat/completions"
-    payload = {
-        "model": cfg["model"],
-        "messages": messages,
-        "temperature": cfg["temperature"],
-        "max_tokens": cfg["max_tokens"],
-        "stream": True,
-    }
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-            "User-Agent": _USER_AGENT,
-        },
-        method="POST",
-    )
-    try:
-        resp = urllib.request.urlopen(req, timeout=30)
-    except urllib.error.HTTPError as exc:
-        detail = ""
-        try:
-            detail = exc.read().decode("utf-8", errors="replace")
-        except Exception:
-            pass
-        raise ProviderError(
-            f"Fallback stream HTTP {exc.code}: {exc.reason}"
-            + (f" — {detail}" if detail else "")
-        ) from exc
-    except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
-        raise ProviderError(f"Fallback stream unreachable: {exc}") from exc
-
-    try:
+        has_content = False
         for line in resp:
             line = line.decode("utf-8").strip() if isinstance(line, bytes) else line.strip()
             if not line or not line.startswith("data: "):
@@ -366,26 +263,21 @@ def _groq_chat_stream(messages: list[dict], cfg: dict[str, Any]):
                 if choices:
                     content = (choices[0].get("delta") or {}).get("content", "")
                     if content:
+                        has_content = True
                         yield content
             except json.JSONDecodeError:
                 pass
+        if not has_content:
+            raise ProviderError("Fallback returned an empty response")
     finally:
         resp.close()
 
 
-def _resolve_handler(provider: str):
+def _resolve_provider_stream(provider: str):
     if provider == "ollama":
-        return _ollama_chat
+        return _ollama_stream
     if provider == "groq":
-        return _groq_chat
-    return None
-
-
-def _resolve_stream_handler(provider: str):
-    if provider == "ollama":
-        return _ollama_chat_stream
-    if provider == "groq":
-        return _groq_chat_stream
+        return _groq_stream
     return None
 
 
@@ -421,47 +313,6 @@ def _is_configured(cfg: dict[str, Any]) -> bool:
     return bool(cfg.get("provider")) and bool(cfg.get("model"))
 
 
-def _try_provider(
-    cfg: dict[str, Any],
-    messages: list[dict],
-) -> str:
-    handler = _resolve_handler(cfg["provider"])
-    if handler is None:
-        raise ProviderError(f"Unknown provider: {cfg['provider']!r}")
-
-    return handler(messages, dict(cfg))
-
-
-def generate_reply(
-    user_message: str,
-    history: list[dict],
-    primary: dict[str, Any] | None = None,
-    fallback: dict[str, Any] | None = None,
-) -> tuple[str, str]:
-    primary = primary or CONFIG
-    fallback = fallback or FALLBACK_CONFIG
-
-    if not user_message or not user_message.strip():
-        return "I didn't catch that — say it again?", "placeholder"
-
-    tone = _detect_tone_for(history, user_message)
-    messages = _build_messages_for_llm(user_message, history, tone=tone)
-
-    if _is_configured(primary):
-        try:
-            return _try_provider(primary, messages), "primary"
-        except ProviderError as exc:
-            print(f"[ChatTalk] Primary ({primary['provider']}) failed: {exc}")
-
-    if _is_configured(fallback):
-        try:
-            return _try_provider(fallback, messages), "fallback"
-        except ProviderError as exc:
-            print(f"[ChatTalk] Fallback ({fallback['provider']}) failed: {exc}")
-
-    return _placeholder_reply(user_message), "placeholder"
-
-
 def generate_reply_stream(
     user_message: str,
     history: list[dict],
@@ -480,28 +331,59 @@ def generate_reply_stream(
     tone = _detect_tone_for(history, user_message)
     messages = _build_messages_for_llm(user_message, history, tone=tone)
 
+    error_log: list[str] = []
+
+    # 1. Primary provider
     if _is_configured(primary):
-        handler = _resolve_stream_handler(primary["provider"])
+        handler = _resolve_provider_stream(primary["provider"])
         if handler:
             try:
+                stream_gen = handler(messages, primary)
+                first_chunk = next(stream_gen)
                 result_info["provider"] = "primary"
-                yield from handler(messages, primary)
+                yield first_chunk
+                yield from stream_gen
                 return
-            except ProviderError as exc:
-                print(f"[ChatTalk] Primary stream ({primary['provider']}) failed: {exc}")
+            except StopIteration:
+                error_log.append(f"Primary ({primary['provider']}): Empty stream response")
+            except Exception as exc:
+                err_msg = f"Primary ({primary['provider']}): {exc}"
+                print(f"[ChatTalk] {err_msg}")
+                error_log.append(err_msg)
 
+    # 2. Fallback provider
     if _is_configured(fallback):
-        handler = _resolve_stream_handler(fallback["provider"])
+        handler = _resolve_provider_stream(fallback["provider"])
         if handler:
             try:
+                stream_gen = handler(messages, fallback)
+                first_chunk = next(stream_gen)
                 result_info["provider"] = "fallback"
-                yield from handler(messages, fallback)
+                yield first_chunk
+                yield from stream_gen
                 return
-            except ProviderError as exc:
-                print(f"[ChatTalk] Fallback stream ({fallback['provider']}) failed: {exc}")
+            except StopIteration:
+                error_log.append(f"Fallback ({fallback['provider']}): Empty stream response")
+            except Exception as exc:
+                err_msg = f"Fallback ({fallback['provider']}): {exc}"
+                print(f"[ChatTalk] {err_msg}")
+                error_log.append(err_msg)
 
+    # 3. Placeholder fallback with diagnostic details
     result_info["provider"] = "placeholder"
-    yield _placeholder_reply(user_message)
+    yield _placeholder_reply(user_message, error_log)
+
+
+def generate_reply(
+    user_message: str,
+    history: list[dict],
+    primary: dict[str, Any] | None = None,
+    fallback: dict[str, Any] | None = None,
+) -> tuple[str, str]:
+    """Non-streaming entry point — wraps generate_reply_stream cleanly."""
+    result_info: dict[str, str] = {"provider": "placeholder"}
+    chunks = list(generate_reply_stream(user_message, history, result_info, primary, fallback))
+    return "".join(chunks), result_info["provider"]
 
 
 def get_config() -> dict[str, Any]:
