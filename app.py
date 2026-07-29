@@ -219,7 +219,7 @@ h1, h2, h3, h4, p, span, div, li, label {
 }
 
 /* ============================================================
-   Native Streamlit Chat Elements Styling (Left User / Right Assistant)
+   Native Streamlit Chat Elements Styling (Right User / Left Assistant)
    ============================================================ */
 [data-testid="stChatMessage"] {
     background: transparent !important;
@@ -238,11 +238,12 @@ h1, h2, h3, h4, p, span, div, li, label {
     font-size: 1.5rem !important;
 }
 
-/* User Message (Left Aligned) */
+/* User Message (Right Aligned) */
 [data-testid="stChatMessage"]:has([data-testid*="user"]),
 [data-testid="stChatMessage"]:has([aria-label*="user"]),
+[data-testid="stChatMessage"]:has(span:contains("🧑")),
 [data-testid="stChatMessage"]:nth-child(odd) {
-    flex-direction: row !important;
+    flex-direction: row-reverse !important;
     justify-content: flex-start !important;
 }
 
@@ -251,7 +252,7 @@ h1, h2, h3, h4, p, span, div, li, label {
 [data-testid="stChatMessage"]:nth-child(odd) [data-testid="stMarkdownContainer"] {
     background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%) !important;
     border: none !important;
-    border-radius: 16px 16px 16px 4px !important;
+    border-radius: 16px 16px 4px 16px !important;
     padding: 0.85rem 1.25rem !important;
     color: #ffffff !important;
     box-shadow: 0 4px 16px rgba(99, 102, 241, 0.35) !important;
@@ -267,11 +268,12 @@ h1, h2, h3, h4, p, span, div, li, label {
     line-height: 1.6 !important;
 }
 
-/* Assistant Message (Right Aligned) */
+/* Assistant Message (Left Aligned) */
 [data-testid="stChatMessage"]:has([data-testid*="assistant"]),
 [data-testid="stChatMessage"]:has([aria-label*="assistant"]),
+[data-testid="stChatMessage"]:has(span:contains("💬")),
 [data-testid="stChatMessage"]:nth-child(even) {
-    flex-direction: row-reverse !important;
+    flex-direction: row !important;
     justify-content: flex-start !important;
 }
 
@@ -280,9 +282,9 @@ h1, h2, h3, h4, p, span, div, li, label {
 [data-testid="stChatMessage"]:nth-child(even) [data-testid="stMarkdownContainer"] {
     background: #1a1d35 !important;
     border: 1px solid #252845 !important;
-    border-right: 4px solid #a78bfa !important;
-    border-left: none !important;
-    border-radius: 16px 16px 4px 16px !important;
+    border-left: 4px solid #a78bfa !important;
+    border-right: none !important;
+    border-radius: 16px 16px 16px 4px !important;
     padding: 0.95rem 1.3rem !important;
     color: #e8e6f0 !important;
     box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3) !important;
