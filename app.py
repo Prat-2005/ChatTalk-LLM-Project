@@ -219,13 +219,83 @@ h1, h2, h3, h4, p, span, div, li, label {
 }
 
 /* ============================================================
-   Native Streamlit Chat Elements Styling (Right User / Left Assistant)
+   WhatsApp & Instagram DM Header Bar
+   ============================================================ */
+.chat-app-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.85rem 1.4rem;
+    border-radius: 20px;
+    background: rgba(19, 21, 42, 0.75);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+    margin-bottom: 1.5rem;
+    animation: fadeIn 0.6s ease-out;
+}
+
+.chat-app-user {
+    display: flex;
+    align-items: center;
+    gap: 0.9rem;
+}
+
+.avatar-badge-wrap {
+    position: relative;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.4rem;
+    box-shadow: 0 4px 14px rgba(99, 102, 241, 0.4);
+}
+
+.online-dot {
+    position: absolute;
+    bottom: 1px;
+    right: 1px;
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    background: #10b981;
+    border: 2px solid #0b0d17;
+    animation: pulseGlow 2.5s infinite;
+}
+
+.chat-app-title {
+    font-weight: 800;
+    font-size: 1.15rem;
+    color: #ffffff;
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    margin: 0;
+}
+
+.verified-icon {
+    color: #6366f1;
+    font-size: 0.9rem;
+}
+
+.chat-app-status {
+    font-size: 0.8rem;
+    color: #8b87a8;
+    margin-top: 0.1rem;
+}
+
+/* ============================================================
+   WhatsApp & Instagram DM Bubble Aesthetics
    ============================================================ */
 [data-testid="stChatMessage"] {
     background: transparent !important;
     animation: messageSlideIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-    padding: 0.6rem 0 !important;
-    margin-bottom: 0.5rem !important;
+    padding: 0.4rem 0 !important;
+    margin-bottom: 0.4rem !important;
     display: flex !important;
     width: 100% !important;
 }
@@ -238,7 +308,7 @@ h1, h2, h3, h4, p, span, div, li, label {
     font-size: 1.5rem !important;
 }
 
-/* User Message (Right Aligned) */
+/* User Message (Sent Message - Right Aligned) */
 [data-testid="stChatMessage"]:has([data-testid*="user"]),
 [data-testid="stChatMessage"]:has([aria-label*="user"]),
 [data-testid="stChatMessage"]:has(span:contains("🧑")),
@@ -250,13 +320,13 @@ h1, h2, h3, h4, p, span, div, li, label {
 [data-testid="stChatMessage"]:has([data-testid*="user"]) [data-testid="stMarkdownContainer"],
 [data-testid="stChatMessage"]:has([aria-label*="user"]) [data-testid="stMarkdownContainer"],
 [data-testid="stChatMessage"]:nth-child(odd) [data-testid="stMarkdownContainer"] {
-    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%) !important;
+    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #d946ef 100%) !important;
     border: none !important;
-    border-radius: 16px 16px 4px 16px !important;
-    padding: 0.85rem 1.25rem !important;
+    border-radius: 20px 20px 4px 20px !important;
+    padding: 0.75rem 1.15rem !important;
     color: #ffffff !important;
-    box-shadow: 0 4px 16px rgba(99, 102, 241, 0.35) !important;
-    max-width: 82% !important;
+    box-shadow: 0 4px 15px rgba(124, 58, 237, 0.3) !important;
+    max-width: 74% !important;
     display: inline-block !important;
     text-align: left !important;
 }
@@ -265,10 +335,11 @@ h1, h2, h3, h4, p, span, div, li, label {
 [data-testid="stChatMessage"]:nth-child(odd) [data-testid="stMarkdownContainer"] p {
     color: #ffffff !important;
     margin: 0 !important;
-    line-height: 1.6 !important;
+    line-height: 1.55 !important;
+    font-size: 0.95rem !important;
 }
 
-/* Assistant Message (Left Aligned) */
+/* Assistant Message (Received Message - Left Aligned) */
 [data-testid="stChatMessage"]:has([data-testid*="assistant"]),
 [data-testid="stChatMessage"]:has([aria-label*="assistant"]),
 [data-testid="stChatMessage"]:has(span:contains("💬")),
@@ -280,15 +351,14 @@ h1, h2, h3, h4, p, span, div, li, label {
 [data-testid="stChatMessage"]:has([data-testid*="assistant"]) [data-testid="stMarkdownContainer"],
 [data-testid="stChatMessage"]:has([aria-label*="assistant"]) [data-testid="stMarkdownContainer"],
 [data-testid="stChatMessage"]:nth-child(even) [data-testid="stMarkdownContainer"] {
-    background: #1a1d35 !important;
-    border: 1px solid #252845 !important;
-    border-left: 4px solid #a78bfa !important;
-    border-right: none !important;
-    border-radius: 16px 16px 16px 4px !important;
-    padding: 0.95rem 1.3rem !important;
+    background: #181b30 !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    border-left: 3px solid #a855f7 !important;
+    border-radius: 20px 20px 20px 4px !important;
+    padding: 0.85rem 1.25rem !important;
     color: #e8e6f0 !important;
-    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3) !important;
-    max-width: 82% !important;
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.25) !important;
+    max-width: 78% !important;
     display: inline-block !important;
 }
 
@@ -296,7 +366,8 @@ h1, h2, h3, h4, p, span, div, li, label {
 [data-testid="stChatMessage"]:nth-child(even) [data-testid="stMarkdownContainer"] p {
     color: #e8e6f0 !important;
     margin: 0 !important;
-    line-height: 1.6 !important;
+    line-height: 1.55 !important;
+    font-size: 0.95rem !important;
 }
 
 /* ============================================================
@@ -777,12 +848,22 @@ with st.sidebar:
 # Main Content UI
 # ---------------------------------------------------------------------------
 
+label = st.session_state.tone_label
+tone_emoji_char = _tone_emoji(label)
+
 st.markdown(
-    """
-    <div class="hero-shell">
-        <div class="hero-badge">✨ Now with Streaming</div>
-        <h1 class="hero-title">Welcome to ChatTalk.</h1>
-        <p class="hero-subtitle">Experience a fluid, responsive AI conversation tailored to your tone.</p>
+    f"""
+    <div class="chat-app-header">
+        <div class="chat-app-user">
+            <div class="avatar-badge-wrap">
+                💬
+                <span class="online-dot"></span>
+            </div>
+            <div>
+                <div class="chat-app-title">ChatTalk AI <span class="verified-icon">✔</span></div>
+                <div class="chat-app-status">Active now · Tone: {tone_emoji_char} {label.title()}</div>
+            </div>
+        </div>
     </div>
     """,
     unsafe_allow_html=True,
