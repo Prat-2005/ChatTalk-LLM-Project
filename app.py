@@ -1,13 +1,15 @@
-"""ChatTalk — Streamlit chat UI (Vibrant & Interactive).
+"""ChatTalk — Streamlit chat UI.
 
-A completely rewritten stunning, dynamic, real-time streaming chat interface
-with beautiful dark-first styling, glassmorphism, animations, and native Streamlit chat elements.
+A vibrant, real-time streaming AI chat experience styled after modern messaging apps
+(Instagram/WhatsApp) with dark-first glassmorphism, tone detection, and session management.
 """
 
 from __future__ import annotations
 
 import html
 import uuid
+import asyncio
+import sys
 
 import streamlit as st
 
@@ -15,6 +17,10 @@ from llm import generate_reply_stream, get_config, get_last_tone
 from prompts import DEFAULT_TONE
 import storage
 
+
+# Silence Windows asyncio Proactor socket shutdown noise
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -29,7 +35,7 @@ st.set_page_config(
 
 
 # ---------------------------------------------------------------------------
-# Styles — animations, vibrant theme, chat bubbles
+# Styles — Theme, Animations, DM Layout
 # ---------------------------------------------------------------------------
 
 _CSS = """
@@ -37,33 +43,17 @@ _CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 
 /* ============================================================
-   Keyframes for Animations
+   Keyframe Animations
    ============================================================ */
 @keyframes messageSlideIn {
-    0% { transform: translateY(16px); opacity: 0; }
+    0% { transform: translateY(14px); opacity: 0; }
     100% { transform: translateY(0); opacity: 1; }
 }
 
 @keyframes pulseGlow {
     0% { transform: scale(1); opacity: 0.8; box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); }
-    50% { transform: scale(1.3); opacity: 1; box-shadow: 0 0 0 4px rgba(16, 185, 129, 0); }
+    50% { transform: scale(1.25); opacity: 1; box-shadow: 0 0 0 4px rgba(16, 185, 129, 0); }
     100% { transform: scale(1); opacity: 0.8; box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
-}
-
-@keyframes typingBounce {
-    0%, 60%, 100% { transform: translateY(0); }
-    30% { transform: translateY(-4px); }
-}
-
-@keyframes fadeIn {
-    from { opacity: 0; }
-    to { opacity: 1; }
-}
-
-@keyframes gradientShift {
-    0% { background-position: 0% 50%; }
-    50% { background-position: 100% 50%; }
-    100% { background-position: 0% 50%; }
 }
 
 @keyframes typingBounce {
@@ -71,8 +61,13 @@ _CSS = """
     40% { transform: scale(1); opacity: 1; }
 }
 
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
 /* ============================================================
-   Dark Mode Default (Vibrant & Interactive)
+   Theme Tokens
    ============================================================ */
 :root {
     --bg-page:        #0b0d17;
@@ -86,12 +81,6 @@ _CSS = """
     --accent-sec:     #a78bfa;
     --accent-glow:    rgba(99, 102, 241, 0.15);
     
-    --user-bubble:    linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
-    --user-shadow:    0 4px 14px rgba(99, 102, 241, 0.25);
-    
-    --assistant-bg:   #1a1d35;
-    --assistant-bdr:  #252845;
-    
     --status-live:    #10b981;
     --status-fb:      #3b82f6;
     --status-ph:      #f59e0b;
@@ -100,9 +89,6 @@ _CSS = """
     --glass-border:   rgba(255, 255, 255, 0.08);
 }
 
-/* ============================================================
-   Light Mode Override
-   ============================================================ */
 @media (prefers-color-scheme: light) {
     :root {
         --bg-page:        #f0eeff;
@@ -116,12 +102,6 @@ _CSS = """
         --accent-sec:     #a78bfa;
         --accent-glow:    rgba(99, 102, 241, 0.1);
         
-        --user-bubble:    linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
-        --user-shadow:    0 4px 12px rgba(99, 102, 241, 0.2);
-        
-        --assistant-bg:   #ffffff;
-        --assistant-bdr:  #e5e1f5;
-        
         --status-live:    #059669;
         --status-fb:      #2563eb;
         --status-ph:      #d97706;
@@ -132,10 +112,11 @@ _CSS = """
 }
 
 /* ============================================================
-   Base Page Chrome & Seamless Full-Screen Background
+   Base Viewport & Chrome
    ============================================================ */
 html, body, .stApp, [data-testid="stAppViewContainer"], 
 section.main, .main, [data-testid="stMain"], [data-testid="stMainBlockContainer"],
+[data-testid="stHeader"], [data-testid="stToolbar"],
 [data-testid="stBottom"], [data-testid="stBottom"] > div,
 .stMainBlockContainer {
     background-color: #0b0d17 !important;
@@ -151,7 +132,6 @@ section.main, .main, [data-testid="stMain"], [data-testid="stMainBlockContainer"
     min-height: 100vh !important;
 }
 
-/* Ensure Streamlit Header & Sidebar Toggle Button are ALWAYS Visible & Clickable */
 [data-testid="stHeader"] {
     background: transparent !important;
     box-shadow: none !important;
@@ -159,6 +139,7 @@ section.main, .main, [data-testid="stMain"], [data-testid="stMainBlockContainer"
     z-index: 99999 !important;
 }
 
+/* Ensure Sidebar Toggle Button is visible & interactive */
 [data-testid="stSidebarCollapseButton"],
 button[data-testid="stSidebarCollapseButton"],
 button[aria-label="Expand sidebar"],
@@ -197,7 +178,6 @@ h1, h2, h3, h4, p, span, div, li, label {
     color: var(--text-primary);
 }
 
-/* Hide Streamlit default top right menu & footer but keep header buttons */
 #MainMenu, footer, [data-testid="stToolbar"] {
     visibility: hidden;
 }
@@ -219,91 +199,125 @@ h1, h2, h3, h4, p, span, div, li, label {
 }
 
 /* ============================================================
-   Instagram-style DM Chat Layout & Theme Aesthetics
+   Instagram & WhatsApp Style DM Chat Layout
    ============================================================ */
 [data-testid="stChatMessage"] {
     background: transparent !important;
-    animation: messageSlideIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-    padding: 0.5rem 0 !important;
-    margin-bottom: 0.4rem !important;
+    animation: messageSlideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    padding: 0.2rem 0 !important;
+    margin-bottom: 1.25rem !important;
     display: flex !important;
     width: 100% !important;
+    align-items: flex-end !important;
+    border: none !important;
+    box-shadow: none !important;
+}
+
+/* Outer content wrapper is transparent & unpadded to prevent double boxes */
+[data-testid="stChatMessageContent"] {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    width: 100% !important;
+    display: flex !important;
 }
 
 [data-testid="stChatMessage"] [data-testid="chatAvatarIcon-assistant"],
 [data-testid="stChatMessage"] [data-testid="chatAvatarIcon-user"],
-[data-testid="stChatMessage"] [data-testid*="ChatMessageAvatar"] {
+[data-testid="stChatMessage"] [data-testid*="ChatMessageAvatar"],
+[data-testid="stChatMessage"] [data-testid="stChatMessageAvatar"] {
     background: transparent !important;
     box-shadow: none !important;
-    font-size: 1.5rem !important;
+    font-size: 1.3rem !important;
+    width: 32px !important;
+    height: 32px !important;
+    min-width: 32px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    margin: 0 0.4rem !important;
 }
 
-/* User Message (Sent Message - Right Aligned) */
+/* User Message Row (Sent - Right Aligned) */
 [data-testid="stChatMessage"]:has([data-testid*="user"]),
 [data-testid="stChatMessage"]:has([aria-label*="user"]),
-[data-testid="stChatMessage"]:has(span:contains("🧑")),
-[data-testid="stChatMessage"]:nth-child(odd) {
+[data-testid="stChatMessage"]:has(span[data-testid*="chatAvatarIcon-user"]) {
     flex-direction: row-reverse !important;
     justify-content: flex-start !important;
 }
 
+[data-testid="stChatMessage"]:has([data-testid*="user"]) [data-testid="stChatMessageContent"],
+[data-testid="stChatMessage"]:has([aria-label*="user"]) [data-testid="stChatMessageContent"] {
+    justify-content: flex-end !important;
+}
+
+/* User Bubble */
 [data-testid="stChatMessage"]:has([data-testid*="user"]) [data-testid="stMarkdownContainer"],
 [data-testid="stChatMessage"]:has([aria-label*="user"]) [data-testid="stMarkdownContainer"],
-[data-testid="stChatMessage"]:nth-child(odd) [data-testid="stMarkdownContainer"] {
+[data-testid="stChatMessage"]:has(span[data-testid*="chatAvatarIcon-user"]) [data-testid="stMarkdownContainer"] {
     background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%) !important;
     border: none !important;
-    border-radius: 18px 18px 4px 18px !important;
-    padding: 0.8rem 1.2rem !important;
+    border-radius: 20px 20px 4px 20px !important;
+    padding: 0.75rem 1.15rem !important;
     color: #ffffff !important;
-    box-shadow: 0 4px 16px rgba(99, 102, 241, 0.32) !important;
-    max-width: 78% !important;
+    box-shadow: 0 4px 16px rgba(99, 102, 241, 0.35) !important;
+    max-width: 70% !important;
     display: inline-block !important;
     text-align: left !important;
+    margin-left: auto !important;
+    margin-right: 0.2rem !important;
 }
 
 [data-testid="stChatMessage"]:has([data-testid*="user"]) [data-testid="stMarkdownContainer"] p,
-[data-testid="stChatMessage"]:nth-child(odd) [data-testid="stMarkdownContainer"] p {
+[data-testid="stChatMessage"]:has([aria-label*="user"]) [data-testid="stMarkdownContainer"] p {
     color: #ffffff !important;
     margin: 0 !important;
-    line-height: 1.6 !important;
+    line-height: 1.55 !important;
     font-size: 0.95rem !important;
 }
 
-/* Assistant Message (Received Message - Left Aligned) */
+/* Assistant Message Row (Received - Left Aligned) */
 [data-testid="stChatMessage"]:has([data-testid*="assistant"]),
 [data-testid="stChatMessage"]:has([aria-label*="assistant"]),
-[data-testid="stChatMessage"]:has(span:contains("💬")),
-[data-testid="stChatMessage"]:nth-child(even) {
+[data-testid="stChatMessage"]:has(span[data-testid*="chatAvatarIcon-assistant"]) {
     flex-direction: row !important;
     justify-content: flex-start !important;
 }
 
+[data-testid="stChatMessage"]:has([data-testid*="assistant"]) [data-testid="stChatMessageContent"],
+[data-testid="stChatMessage"]:has([aria-label*="assistant"]) [data-testid="stChatMessageContent"] {
+    justify-content: flex-start !important;
+}
+
+/* Assistant Bubble */
 [data-testid="stChatMessage"]:has([data-testid*="assistant"]) [data-testid="stMarkdownContainer"],
 [data-testid="stChatMessage"]:has([aria-label*="assistant"]) [data-testid="stMarkdownContainer"],
-[data-testid="stChatMessage"]:nth-child(even) [data-testid="stMarkdownContainer"] {
-    background: #1a1d35 !important;
-    border: 1px solid #252845 !important;
-    border-left: 4px solid #6366f1 !important;
-    border-radius: 18px 18px 18px 4px !important;
-    padding: 0.9rem 1.3rem !important;
+[data-testid="stChatMessage"]:has(span[data-testid*="chatAvatarIcon-assistant"]) [data-testid="stMarkdownContainer"] {
+    background: #181b34 !important;
+    border: 1px solid rgba(99, 102, 241, 0.25) !important;
+    border-radius: 20px 20px 20px 4px !important;
+    padding: 0.85rem 1.25rem !important;
     color: #e8e6f0 !important;
-    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.25) !important;
-    max-width: 82% !important;
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.3) !important;
+    max-width: 75% !important;
     display: inline-block !important;
+    margin-right: auto !important;
+    margin-left: 0.2rem !important;
 }
 
 [data-testid="stChatMessage"]:has([data-testid*="assistant"]) [data-testid="stMarkdownContainer"] p,
-[data-testid="stChatMessage"]:nth-child(even) [data-testid="stMarkdownContainer"] p {
+[data-testid="stChatMessage"]:has([aria-label*="assistant"]) [data-testid="stMarkdownContainer"] p {
     color: #e8e6f0 !important;
     margin: 0 !important;
-    line-height: 1.6 !important;
+    line-height: 1.55 !important;
     font-size: 0.95rem !important;
 }
 
 /* ============================================================
-   Custom UI Elements (Hero, Status, Tones)
+   Custom UI Components (Hero, Badges, Typing Dots)
    ============================================================ */
-
 .hero-shell {
     padding: 1.5rem;
     border: 1px solid var(--glass-border);
@@ -347,17 +361,15 @@ h1, h2, h3, h4, p, span, div, li, label {
     margin: 0;
 }
 
-/* Empty State */
 .empty-state {
     text-align: center;
     padding: 3rem 0;
-    animation: fadeIn 1s ease-out;
+    animation: fadeIn 0.8s ease-out;
 }
 .empty-emoji {
     font-size: 3rem;
     margin-bottom: 1rem;
     display: inline-block;
-    animation: messageSlideIn 0.5s ease-out;
 }
 .empty-title {
     font-size: 1.2rem;
@@ -371,35 +383,6 @@ h1, h2, h3, h4, p, span, div, li, label {
     margin: 0 auto 2rem;
 }
 
-/* Quick Prompts Grid */
-.quick-prompts {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 0.8rem;
-    padding: 0 1rem;
-}
-
-.quick-prompt-btn {
-    background: var(--surface-elev);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 1rem;
-    color: var(--text-primary);
-    font-size: 0.9rem;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    text-align: left;
-    box-shadow: 0 2px 5px rgba(0,0,0,0.05);
-}
-
-.quick-prompt-btn:hover {
-    background: var(--surface);
-    border-color: var(--accent);
-    transform: translateY(-2px);
-    box-shadow: 0 4px 12px var(--accent-glow);
-}
-
-/* Status Pill */
 .status-pill {
     display: inline-flex;
     align-items: center;
@@ -421,7 +404,6 @@ h1, h2, h3, h4, p, span, div, li, label {
 .status-fallback .dot { background: var(--status-fb); }
 .status-placeholder .dot { background: var(--status-ph); }
 
-/* Tone Chip */
 .tone-chip {
     display: inline-flex;
     align-items: center;
@@ -435,15 +417,13 @@ h1, h2, h3, h4, p, span, div, li, label {
     border: 1px solid rgba(99, 102, 241, 0.2);
 }
 
-/* Typing Dots Animation */
 .typing-dots {
     display: inline-flex;
     align-items: center;
     gap: 5px;
     padding: 0.4rem 0.8rem;
-    background: var(--assistant-bg);
-    border: 1px solid var(--assistant-bdr);
-    border-left: 4px solid var(--accent);
+    background: #181b34;
+    border: 1px solid rgba(99, 102, 241, 0.25);
     border-radius: 12px 12px 12px 4px;
 }
 .typing-dots span {
@@ -459,7 +439,7 @@ h1, h2, h3, h4, p, span, div, li, label {
 .typing-dots span:nth-child(3) { animation-delay: 0.0s; }
 
 /* ============================================================
-   Sidebar Overrides
+   Sidebar & Buttons
    ============================================================ */
 section[data-testid="stSidebar"] {
     background: rgba(19, 21, 42, 0.4) !important;
@@ -510,7 +490,6 @@ section[data-testid="stSidebar"] .stButton button:hover {
     margin: 0 auto;
 }
 
-/* Floating glass container for input */
 [data-testid="stChatInput"] > div {
     background: rgba(26, 29, 53, 0.85) !important;
     border: 1px solid rgba(99, 102, 241, 0.35) !important;
@@ -542,7 +521,6 @@ section[data-testid="stSidebar"] .stButton button:hover {
     color: var(--text-muted) !important;
 }
 
-/* Circular send button */
 [data-testid="stChatInput"] button {
     background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%) !important;
     color: #ffffff !important;
@@ -564,17 +542,11 @@ section[data-testid="stSidebar"] .stButton button:hover {
 
 
 # ---------------------------------------------------------------------------
-# Core Helpers
+# Core State & Session Helpers
 # ---------------------------------------------------------------------------
 
 def _append_message(role: str, content: str) -> None:
     st.session_state.messages.append({"role": role, "content": content})
-
-
-def _session_display_name(session: dict[str, object]) -> str:
-    preview = str(session.get("preview") or "Empty session")
-    count = int(session.get("message_count") or 0)
-    return f"{preview} · {count} msg{'s' if count != 1 else ''}"
 
 
 def _load_session(sid: str) -> None:
@@ -631,14 +603,8 @@ def _model_status_html(cfg: dict) -> str:
             text = f"Live · {primary.get('model') or primary.get('provider') or 'primary'}"
         else:
             text = "Live · primary"
-    return (
-        f'<span class="status-pill {cls}"><span class="dot"></span>{text}</span>'
-    )
+    return f'<span class="status-pill {cls}"><span class="dot"></span>{text}</span>'
 
-
-# ---------------------------------------------------------------------------
-# Session Init
-# ---------------------------------------------------------------------------
 
 def _init_state() -> None:
     st.session_state.setdefault("messages", [])
@@ -666,7 +632,7 @@ def _persist() -> None:
     )
 
 
-# Inject CSS
+# Inject global CSS
 st.markdown(_CSS, unsafe_allow_html=True)
 
 
@@ -693,7 +659,6 @@ with st.sidebar:
     st.markdown(_model_status_html(cfg), unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # New chat button prominent at top of sidebar
     if st.button("＋ New Chat", use_container_width=True, type="primary"):
         _new_session()
         st.rerun()
@@ -717,7 +682,6 @@ with st.sidebar:
         sid = item["sid"]
         is_active = (sid == current_sid)
         preview = item.get("preview") or "Empty chat"
-        count = int(item.get("message_count") or 0)
         icon = "💬" if is_active else "🗨️"
         label_text = f"{icon} {preview}"
         
@@ -826,17 +790,14 @@ else:
     prompt = st.chat_input("Say something to ChatTalk…")
 
 if prompt:
-    # Append & Show user message immediately
     _append_message("user", prompt)
     with st.chat_message("user", avatar="🧑"):
         st.markdown(prompt)
 
-    # Tone update
     tone = get_last_tone(st.session_state.messages, current=prompt)
     st.session_state.tone_label = tone.label
     st.session_state.tone_confidence = tone.confidence
 
-    # Stream assistant reply with typing indicator
     with st.chat_message("assistant", avatar="💬"):
         typing_placeholder = st.empty()
         typing_placeholder.markdown(
