@@ -107,6 +107,7 @@ class TestLoadSave:
             },
             sid="alpha",
         )
+        import time; time.sleep(0.02)
         storage.save_history(
             {
                 "messages": [{"role": "user", "content": "second session"}],
