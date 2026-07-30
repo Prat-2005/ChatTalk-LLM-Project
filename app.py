@@ -264,6 +264,7 @@ h1, h2, h3, h4, p, span, div, li, label {
     color: #ffffff !important;
     box-shadow: 0 4px 16px rgba(99, 102, 241, 0.35) !important;
     max-width: 70% !important;
+    width: fit-content !important;
     display: inline-block !important;
     text-align: left !important;
     margin-left: auto !important;
@@ -302,9 +303,19 @@ h1, h2, h3, h4, p, span, div, li, label {
     color: #e8e6f0 !important;
     box-shadow: 0 4px 18px rgba(0, 0, 0, 0.3) !important;
     max-width: 75% !important;
+    width: fit-content !important;
     display: inline-block !important;
     margin-right: auto !important;
     margin-left: 0.2rem !important;
+}
+
+[data-testid="stChatMessage"]:has([data-testid*="assistant"]) [data-testid="stMarkdownContainer"]:has(.typing-dots),
+[data-testid="stChatMessage"]:has([aria-label*="assistant"]) [data-testid="stMarkdownContainer"]:has(.typing-dots),
+[data-testid="stChatMessage"]:has(span[data-testid*="chatAvatarIcon-assistant"]) [data-testid="stMarkdownContainer"]:has(.typing-dots) {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
 }
 
 [data-testid="stChatMessage"]:has([data-testid*="assistant"]) [data-testid="stMarkdownContainer"] p,
