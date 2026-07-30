@@ -54,41 +54,45 @@ _load_dotenv()
 
 
 def _env(name: str, default: str = "") -> str:
-    """Retrieve environment variable from os.environ or streamlit.secrets."""
+    """
+    Safely retrieve environment variable from os.environ or streamlit.secrets.
+    Dynamically scans root secrets and all nested sections for the requested key.
+    """
+    # 1. Check system environment variables first
     value = os.environ.get(name)
-    if value is not None and value.strip() != "":
+    if value and value.strip():
         return value.strip()
+
     try:
         import streamlit as st
-        if hasattr(st, "secrets") and st.secrets is not None:
-            # Direct key lookups (exact, lower, upper)
-            for key in (name, name.lower(), name.upper()):
-                try:
-                    if key in st.secrets:
-                        val = str(st.secrets[key])
-                        if val and val.strip() != "":
-                            return val.strip()
-                except Exception:
-                    pass
+        # Safeguard if secrets are empty or not initialized
+        if not hasattr(st, "secrets") or st.secrets is None:
+            return default
 
-            # Nested TOML section lookups e.g. st.secrets["groq"]["api_key"]
+        # 2. Check root-level secrets (exact, lower, upper)
+        for key in (name, name.lower(), name.upper()):
+            if key in st.secrets:
+                val = str(st.secrets[key]).strip()
+                if val:
+                    return val
+
+        # 3. Dynamically scan ALL nested TOML sections for the requested key
+        for section in st.secrets.keys():
             try:
-                for sec_name in ("groq", "fallback", "llm", "primary"):
-                    if sec_name in st.secrets:
-                        sec = st.secrets[sec_name]
-                        if isinstance(sec, dict) or hasattr(sec, "__getitem__"):
-                            for key in (name, name.lower(), name.upper(), "api_key", "key", "model", "provider"):
-                                try:
-                                    if key in sec:
-                                        val = str(sec[key])
-                                        if val and val.strip() != "":
-                                            return val.strip()
-                                except Exception:
-                                    pass
+                sec_dict = st.secrets[section]
+                # Verify the section is actually a dictionary or nested Secrets object
+                if isinstance(sec_dict, (dict, type(st.secrets))):
+                    for key in (name, name.lower(), name.upper()):
+                        if key in sec_dict:
+                            val = str(sec_dict[key]).strip()
+                            if val:
+                                return val
             except Exception:
-                pass
+                pass  # Skip malformed or inaccessible sections safely
+
     except Exception:
-        pass
+        pass  # Fallback if streamlit module is missing or completely errors out
+
     return default
 
 
@@ -130,15 +134,10 @@ def _build_config() -> dict[str, Any]:
 
 
 def _build_fallback_config() -> dict[str, Any]:
-    api_key = (
-        _env("FALLBACK_API_KEY")
-        or _env("GROQ_API_KEY")
-        or _env("LLM_API_KEY")
-        or _env("OPENAI_API_KEY")
-    )
-    provider = _env("FALLBACK_PROVIDER", "groq").lower()
-    model = _env("FALLBACK_MODEL", "llama-3.1-8b-instant")
-    base_url = _env("FALLBACK_BASE_URL", "https://api.groq.com").rstrip("/")
+    api_key = _env("FALLBACK_API_KEY")
+    provider = _env("FALLBACK_PROVIDER").lower()
+    model = _env("FALLBACK_MODEL")
+    base_url = _env("FALLBACK_BASE_URL").rstrip("/")
     return {
         "provider": provider,
         "model": model,
@@ -182,7 +181,7 @@ def _placeholder_reply(user_message: str, errors: list[str] | None = None) -> st
     )
 
 
-def _ollama_stream(messages: list[dict], cfg: dict[str, Any]) -> Generator[str, None, None]:
+def _local_stream(messages: list[dict], cfg: dict[str, Any]) -> Generator[str, None, None]:
     url = f"{cfg['base_url']}/api/chat"
     payload = {
         "model": cfg["model"],
@@ -201,11 +200,11 @@ def _ollama_stream(messages: list[dict], cfg: dict[str, Any]) -> Generator[str, 
         method="POST",
     )
     try:
-        resp = urllib.request.urlopen(req, timeout=30)
+        resp = urllib.request.urlopen(req, timeout=60)
     except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
-        raise ProviderError(f"Ollama unreachable: {exc}") from exc
+        raise ProviderError(f"{cfg['provider'].title()} unreachable: {exc}") from exc
     except urllib.error.HTTPError as exc:
-        raise ProviderError(f"Ollama HTTP {exc.code}: {exc.reason}") from exc
+        raise ProviderError(f"{cfg['provider'].title()} HTTP {exc.code}: {exc.reason}") from exc
 
     try:
         has_content = False
@@ -224,15 +223,15 @@ def _ollama_stream(messages: list[dict], cfg: dict[str, Any]) -> Generator[str, 
             except json.JSONDecodeError:
                 pass
         if not has_content:
-            raise ProviderError("Ollama returned an empty response")
+            raise ProviderError(f"{cfg['provider'].title()} returned an empty response")
     finally:
         resp.close()
 
 
-def _groq_stream(messages: list[dict], cfg: dict[str, Any]) -> Generator[str, None, None]:
-    api_key = cfg.get("api_key") or ""
+def _fallback_stream(messages: list[dict], cfg: dict[str, Any]) -> Generator[str, None, None]:
+    api_key = cfg.get("api_key", "")
     if not api_key:
-        raise ProviderError("FALLBACK_API_KEY / GROQ_API_KEY is not set.")
+        raise ProviderError("FALLBACK_API_KEY is not set.")
 
     base_url = cfg["base_url"].rstrip("/")
     if not base_url.endswith("/openai/v1"):
@@ -297,10 +296,10 @@ def _groq_stream(messages: list[dict], cfg: dict[str, Any]) -> Generator[str, No
 
 
 def _resolve_provider_stream(provider: str):
-    if provider == "ollama":
-        return _ollama_stream
-    if provider == "groq":
-        return _groq_stream
+    if provider == _build_config().get("provider"):
+        return _local_stream
+    if provider == _build_config().get("provider"):
+        return _fallback_stream
     return None
 
 

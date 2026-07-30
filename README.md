@@ -70,9 +70,9 @@ Edit `.env` to configure your preferred LLM model and provider settings (check `
 
 ```env
 # Primary LLM provider (Local or Remote)
-LLM_PROVIDER=ollama
-LLM_MODEL=YOUR_MODEL_NAME
-LLM_BASE_URL=http://localhost:11434
+LLM_PROVIDER=YOUR_LOCAL_PROVIDER
+LLM_MODEL=YOUR_LOCAL_MODEL
+LLM_BASE_URL=YOUR_LOCAL_BASE_URL
 
 # (Optional) Secondary Fallback Provider
 FALLBACK_PROVIDER=YOUR_FALLBACK_PROVIDER
