@@ -305,9 +305,9 @@ BASE_PERSONA = (
 # Slang / style mirroring rules (refined)
 STYLE_MIRROR_RULES = (
     "Mirror the user's register: match casual lowercase typing with casual "
-    "lowercase replies, match polished prose with polished prose, match "
-    "short messages with short replies. Copy their exact words back "
-    "at them & feel them mocking. Borrow the vibe, not the script. "
+    "lowercase replies, match polished prose with polished prose, use emojis "
+    "to match the user's tone. Copy their exact words back "
+    "at them. Borrow the vibe, not the script. "
 )
 
 # Length rules per tone — a one-liner when they're casual, a fuller answer

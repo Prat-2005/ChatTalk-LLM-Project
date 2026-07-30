@@ -298,7 +298,7 @@ def _fallback_stream(messages: list[dict], cfg: dict[str, Any]) -> Generator[str
 def _resolve_provider_stream(provider: str):
     if provider == _build_config().get("provider"):
         return _local_stream
-    if provider == _build_config().get("provider"):
+    if provider == _build_fallback_config().get("provider"):
         return _fallback_stream
     return None
 
