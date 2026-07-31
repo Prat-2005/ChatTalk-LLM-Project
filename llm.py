@@ -206,6 +206,7 @@ def _local_stream(messages: list[dict], cfg: dict[str, Any]) -> Generator[str, N
     except urllib.error.HTTPError as exc:
         raise ProviderError(f"{cfg['provider'].title()} HTTP {exc.code}: {exc.reason}") from exc
 
+    # Print response one line at a time, yielding content chunks as they arrive; it's a streaming response.
     try:
         has_content = False
         for line in resp:
@@ -270,6 +271,7 @@ def _fallback_stream(messages: list[dict], cfg: dict[str, Any]) -> Generator[str
     except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
         raise ProviderError(f"Fallback unreachable: {exc}") from exc
 
+    # Print response one line at a time, yielding content chunks as they arrive; it's a streaming response.
     try:
         has_content = False
         for line in resp:
