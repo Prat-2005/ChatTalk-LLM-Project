@@ -52,8 +52,6 @@ ChatTalk/
 │   ├── index.html             # App shell — auth modal, sidebar, chat area
 │   ├── script.js              # Client logic — streaming, session management, auth flows
 │   └── style.css              # Dark glassmorphism theme & responsive layout
-├── assets/
-│   └── chattalk_preview.png   # Application preview screenshot
 ├── requirements.txt           # Python dependencies
 ├── .env.example               # Environment variable template
 ├── LICENSE                    # MIT License
