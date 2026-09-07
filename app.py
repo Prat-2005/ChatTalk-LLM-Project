@@ -1,868 +1,346 @@
-"""ChatTalk — Streamlit chat UI.
-
-A vibrant, real-time streaming AI chat experience styled after modern messaging apps
-(Instagram/WhatsApp) with dark-first glassmorphism, tone detection, and session management.
-"""
+"""FastAPI backend with hybrid storage (file-based for anonymous, DB for authenticated)."""
 
 from __future__ import annotations
 
-import html
+import json
 import uuid
-import asyncio
-import sys
+from typing import AsyncGenerator, Generator
+from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+from backend import storage, llm
 
-import streamlit as st
-
-from llm import generate_reply_stream, get_config, get_last_tone
-from prompts import DEFAULT_TONE
-import storage
-
-
-# Silence Windows asyncio Proactor socket shutdown noise
-if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+from backend.db import (
+    SessionLocal,
+    User,
+    get_user_by_username,
+    create_user,
+    authenticate_user,
+    get_session,
+    list_user_sessions,
+    create_or_update_session,
+    delete_session,
+    get_session_state,
+)
+from backend.auth import create_access_token, verify_token
 
 # ---------------------------------------------------------------------------
-# Page config
+# Pydantic models
 # ---------------------------------------------------------------------------
 
-st.set_page_config(
-    page_title="ChatTalk",
-    page_icon="💬",
-    layout="centered",
-    initial_sidebar_state="expanded",
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+
+class UserCreate(BaseModel):
+    username: str
+    password: str
+    first_name: str 
+    last_name: str 
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class ChatRequest(BaseModel):
+    message: str
+    history: list[dict[str, str]]
+    session_id: str | None = None   # optional; if not provided, generate
+
+
+class SessionUpdate(BaseModel):
+    messages: list[dict[str, str]]
+    tone_label: str = "neutral"
+    tone_confidence: float = 0.0
+    title: str = "New Chat"
+
+
+class TitleRequest(BaseModel):
+    history: list[dict[str, str]]
+
+class ToneRequest(BaseModel):
+    history: list[dict[str, str]]
+    current_message: str = ""
+
+# ---------------------------------------------------------------------------
+# FastAPI app
+# ---------------------------------------------------------------------------
+
+app = FastAPI(title="ChatTalk API", version="1.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-
 # ---------------------------------------------------------------------------
-# Styles — Theme, Animations, DM Layout
-# ---------------------------------------------------------------------------
-
-_CSS = """
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-
-/* ============================================================
-   Keyframe Animations
-   ============================================================ */
-@keyframes messageSlideIn {
-    0% { transform: translateY(14px); opacity: 0; }
-    100% { transform: translateY(0); opacity: 1; }
-}
-
-@keyframes pulseGlow {
-    0% { transform: scale(1); opacity: 0.8; box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); }
-    50% { transform: scale(1.25); opacity: 1; box-shadow: 0 0 0 4px rgba(16, 185, 129, 0); }
-    100% { transform: scale(1); opacity: 0.8; box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
-}
-
-@keyframes typingBounce {
-    0%, 80%, 100% { transform: scale(0.3); opacity: 0.3; }
-    40% { transform: scale(1); opacity: 1; }
-}
-
-@keyframes fadeIn {
-    from { opacity: 0; }
-    to { opacity: 1; }
-}
-
-/* ============================================================
-   Theme Tokens
-   ============================================================ */
-:root {
-    --bg-page:        #0b0d17;
-    --surface:        #13152a;
-    --surface-elev:   #1a1d35;
-    --border:         #252845;
-    --text-primary:   #e8e6f0;
-    --text-muted:     #8b87a8;
-    --text-dim:       #5e5b75;
-    --accent:         #6366f1;
-    --accent-sec:     #a78bfa;
-    --accent-glow:    rgba(99, 102, 241, 0.15);
-    
-    --status-live:    #10b981;
-    --status-fb:      #3b82f6;
-    --status-ph:      #f59e0b;
-    
-    --glass-bg:       rgba(19, 21, 42, 0.65);
-    --glass-border:   rgba(255, 255, 255, 0.08);
-}
-
-@media (prefers-color-scheme: light) {
-    :root {
-        --bg-page:        #f0eeff;
-        --surface:        #ffffff;
-        --surface-elev:   #f7f6fc;
-        --border:         #e5e1f5;
-        --text-primary:   #1a1733;
-        --text-muted:     #6b6586;
-        --text-dim:       #a09db0;
-        --accent:         #6366f1;
-        --accent-sec:     #a78bfa;
-        --accent-glow:    rgba(99, 102, 241, 0.1);
-        
-        --status-live:    #059669;
-        --status-fb:      #2563eb;
-        --status-ph:      #d97706;
-        
-        --glass-bg:       rgba(255, 255, 255, 0.7);
-        --glass-border:   rgba(99, 102, 241, 0.15);
-    }
-}
-
-/* ============================================================
-   Base Viewport & Chrome
-   ============================================================ */
-html, body, .stApp, [data-testid="stAppViewContainer"], 
-section.main, .main, [data-testid="stMain"], [data-testid="stMainBlockContainer"],
-[data-testid="stHeader"], [data-testid="stToolbar"],
-[data-testid="stBottom"], [data-testid="stBottom"] > div,
-.stMainBlockContainer {
-    background-color: #0b0d17 !important;
-    background-image: 
-        radial-gradient(circle at 15% 50%, var(--accent-glow) 0%, transparent 50%),
-        radial-gradient(circle at 85% 30%, rgba(167, 139, 250, 0.08) 0%, transparent 50%) !important;
-    background-attachment: fixed !important;
-    color: var(--text-primary);
-    font-family: "Inter", sans-serif;
-}
-
-[data-testid="stAppViewContainer"] > section.main {
-    min-height: 100vh !important;
-}
-
-[data-testid="stHeader"] {
-    background: transparent !important;
-    box-shadow: none !important;
-    border: none !important;
-    z-index: 99999 !important;
-}
-
-/* Ensure Sidebar Toggle Button is visible & interactive */
-[data-testid="stSidebarCollapseButton"],
-button[data-testid="stSidebarCollapseButton"],
-button[aria-label="Expand sidebar"],
-button[aria-label="Collapse sidebar"],
-button[data-testid="baseButton-header"],
-[data-testid="stHeader"] button {
-    visibility: visible !important;
-    display: flex !important;
-    opacity: 1 !important;
-    color: #ffffff !important;
-    background: #1a1d35 !important;
-    border: 1px solid #252845 !important;
-    border-radius: 10px !important;
-    z-index: 999999 !important;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.3) !important;
-    transition: all 0.2s ease !important;
-}
-
-[data-testid="stSidebarCollapseButton"]:hover,
-button[aria-label="Expand sidebar"]:hover,
-button[aria-label="Collapse sidebar"]:hover,
-button[data-testid="baseButton-header"]:hover {
-    background: #6366f1 !important;
-    color: #ffffff !important;
-    border-color: #6366f1 !important;
-    transform: scale(1.05) !important;
-}
-
-.block-container {
-    max-width: 820px;
-    padding-top: 1.5rem;
-    padding-bottom: 7rem;
-}
-
-h1, h2, h3, h4, p, span, div, li, label {
-    color: var(--text-primary);
-}
-
-#MainMenu, footer, [data-testid="stToolbar"] {
-    visibility: hidden;
-}
-
-/* Scrollbars */
-::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
-}
-::-webkit-scrollbar-thumb {
-    background: var(--text-dim);
-    border-radius: 999px;
-}
-::-webkit-scrollbar-thumb:hover {
-    background: var(--accent);
-}
-::-webkit-scrollbar-track {
-    background: transparent;
-}
-
-/* ============================================================
-   Instagram & WhatsApp Style DM Chat Layout
-   ============================================================ */
-[data-testid="stChatMessage"] {
-    background: transparent !important;
-    animation: messageSlideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-    padding: 0.2rem 0 !important;
-    margin-bottom: 1.25rem !important;
-    display: flex !important;
-    width: 100% !important;
-    align-items: flex-end !important;
-    border: none !important;
-    box-shadow: none !important;
-}
-
-/* Outer content wrapper is transparent & unpadded to prevent double boxes */
-[data-testid="stChatMessageContent"] {
-    background: transparent !important;
-    border: none !important;
-    box-shadow: none !important;
-    padding: 0 !important;
-    margin: 0 !important;
-    width: 100% !important;
-    display: flex !important;
-}
-
-[data-testid="stChatMessage"] [data-testid="chatAvatarIcon-assistant"],
-[data-testid="stChatMessage"] [data-testid="chatAvatarIcon-user"],
-[data-testid="stChatMessage"] [data-testid*="ChatMessageAvatar"],
-[data-testid="stChatMessage"] [data-testid="stChatMessageAvatar"] {
-    background: transparent !important;
-    box-shadow: none !important;
-    font-size: 1.3rem !important;
-    width: 32px !important;
-    height: 32px !important;
-    min-width: 32px !important;
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-    margin: 0 0.4rem !important;
-}
-
-/* User Message Row (Sent - Right Aligned) */
-[data-testid="stChatMessage"]:has([data-testid*="user"]),
-[data-testid="stChatMessage"]:has([aria-label*="user"]),
-[data-testid="stChatMessage"]:has(span[data-testid*="chatAvatarIcon-user"]) {
-    flex-direction: row-reverse !important;
-    justify-content: flex-start !important;
-}
-
-[data-testid="stChatMessage"]:has([data-testid*="user"]) [data-testid="stChatMessageContent"],
-[data-testid="stChatMessage"]:has([aria-label*="user"]) [data-testid="stChatMessageContent"] {
-    justify-content: flex-end !important;
-}
-
-/* User Bubble */
-[data-testid="stChatMessage"]:has([data-testid*="user"]) [data-testid="stMarkdownContainer"],
-[data-testid="stChatMessage"]:has([aria-label*="user"]) [data-testid="stMarkdownContainer"],
-[data-testid="stChatMessage"]:has(span[data-testid*="chatAvatarIcon-user"]) [data-testid="stMarkdownContainer"] {
-    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%) !important;
-    border: none !important;
-    border-radius: 20px 20px 4px 20px !important;
-    padding: 0.75rem 1.15rem !important;
-    color: #ffffff !important;
-    box-shadow: 0 4px 16px rgba(99, 102, 241, 0.35) !important;
-    max-width: 70% !important;
-    width: fit-content !important;
-    display: inline-block !important;
-    text-align: left !important;
-    margin-left: auto !important;
-    margin-right: 0.2rem !important;
-}
-
-[data-testid="stChatMessage"]:has([data-testid*="user"]) [data-testid="stMarkdownContainer"] p,
-[data-testid="stChatMessage"]:has([aria-label*="user"]) [data-testid="stMarkdownContainer"] p {
-    color: #ffffff !important;
-    margin: 0 !important;
-    line-height: 1.55 !important;
-    font-size: 0.95rem !important;
-}
-
-/* Assistant Message Row (Received - Left Aligned) */
-[data-testid="stChatMessage"]:has([data-testid*="assistant"]),
-[data-testid="stChatMessage"]:has([aria-label*="assistant"]),
-[data-testid="stChatMessage"]:has(span[data-testid*="chatAvatarIcon-assistant"]) {
-    flex-direction: row !important;
-    justify-content: flex-start !important;
-}
-
-[data-testid="stChatMessage"]:has([data-testid*="assistant"]) [data-testid="stChatMessageContent"],
-[data-testid="stChatMessage"]:has([aria-label*="assistant"]) [data-testid="stChatMessageContent"] {
-    justify-content: flex-start !important;
-}
-
-/* Assistant Bubble */
-[data-testid="stChatMessage"]:has([data-testid*="assistant"]) [data-testid="stMarkdownContainer"],
-[data-testid="stChatMessage"]:has([aria-label*="assistant"]) [data-testid="stMarkdownContainer"],
-[data-testid="stChatMessage"]:has(span[data-testid*="chatAvatarIcon-assistant"]) [data-testid="stMarkdownContainer"] {
-    background: #181b34 !important;
-    border: 1px solid rgba(99, 102, 241, 0.25) !important;
-    border-radius: 20px 20px 20px 4px !important;
-    padding: 0.85rem 1.25rem !important;
-    color: #e8e6f0 !important;
-    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.3) !important;
-    max-width: 75% !important;
-    width: fit-content !important;
-    display: inline-block !important;
-    margin-right: auto !important;
-    margin-left: 0.2rem !important;
-}
-
-[data-testid="stChatMessage"]:has([data-testid*="assistant"]) [data-testid="stMarkdownContainer"]:has(.typing-dots),
-[data-testid="stChatMessage"]:has([aria-label*="assistant"]) [data-testid="stMarkdownContainer"]:has(.typing-dots),
-[data-testid="stChatMessage"]:has(span[data-testid*="chatAvatarIcon-assistant"]) [data-testid="stMarkdownContainer"]:has(.typing-dots) {
-    background: transparent !important;
-    border: none !important;
-    box-shadow: none !important;
-    padding: 0 !important;
-}
-
-[data-testid="stChatMessage"]:has([data-testid*="assistant"]) [data-testid="stMarkdownContainer"] p,
-[data-testid="stChatMessage"]:has([aria-label*="assistant"]) [data-testid="stMarkdownContainer"] p {
-    color: #e8e6f0 !important;
-    margin: 0 !important;
-    line-height: 1.55 !important;
-    font-size: 0.95rem !important;
-}
-
-/* ============================================================
-   Custom UI Components (Hero, Badges, Typing Dots)
-   ============================================================ */
-.hero-shell {
-    padding: 1.5rem;
-    border: 1px solid var(--glass-border);
-    border-radius: 20px;
-    background: var(--glass-bg);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
-    margin-bottom: 2rem;
-    animation: fadeIn 0.8s ease-out;
-}
-
-.hero-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    padding: 0.35rem 0.8rem;
-    border-radius: 999px;
-    font-size: 0.75rem;
-    font-weight: 700;
-    color: var(--accent);
-    background: var(--accent-glow);
-    border: 1px solid rgba(99, 102, 241, 0.2);
-    margin-bottom: 1rem;
-}
-
-.hero-title {
-    font-size: 1.7rem;
-    font-weight: 800;
-    margin: 0 0 0.5rem 0;
-    letter-spacing: -0.02em;
-    background: linear-gradient(to right, var(--accent), var(--accent-sec));
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-}
-
-.hero-subtitle {
-    color: var(--text-muted);
-    font-size: 0.95rem;
-    line-height: 1.6;
-    margin: 0;
-}
-
-.empty-state {
-    text-align: center;
-    padding: 3rem 0;
-    animation: fadeIn 0.8s ease-out;
-}
-.empty-emoji {
-    font-size: 3rem;
-    margin-bottom: 1rem;
-    display: inline-block;
-}
-.empty-title {
-    font-size: 1.2rem;
-    font-weight: 700;
-    margin-bottom: 0.5rem;
-}
-.empty-hint {
-    color: var(--text-muted);
-    font-size: 0.9rem;
-    max-width: 400px;
-    margin: 0 auto 2rem;
-}
-
-.status-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.4rem 0.9rem;
-    border-radius: 999px;
-    font-size: 0.8rem;
-    font-weight: 600;
-    background: var(--surface-elev);
-    border: 1px solid var(--border);
-}
-.status-pill .dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    animation: pulseGlow 2s infinite;
-}
-.status-live .dot { background: var(--status-live); }
-.status-fallback .dot { background: var(--status-fb); }
-.status-placeholder .dot { background: var(--status-ph); }
-
-.tone-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    padding: 0.35rem 0.85rem;
-    border-radius: 999px;
-    font-size: 0.8rem;
-    font-weight: 600;
-    background: var(--accent-glow);
-    color: var(--accent);
-    border: 1px solid rgba(99, 102, 241, 0.2);
-}
-
-.typing-dots {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 0.4rem 0.8rem;
-    background: #181b34;
-    border: 1px solid rgba(99, 102, 241, 0.25);
-    border-radius: 12px 12px 12px 4px;
-}
-.typing-dots span {
-    width: 7px;
-    height: 7px;
-    background-color: var(--accent-sec);
-    border-radius: 50%;
-    display: inline-block;
-    animation: typingBounce 1.4s infinite ease-in-out both;
-}
-.typing-dots span:nth-child(1) { animation-delay: -0.32s; }
-.typing-dots span:nth-child(2) { animation-delay: -0.16s; }
-.typing-dots span:nth-child(3) { animation-delay: 0.0s; }
-
-/* ============================================================
-   Sidebar & Buttons
-   ============================================================ */
-section[data-testid="stSidebar"] {
-    background: rgba(19, 21, 42, 0.4) !important;
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
-    border-right: 1px solid var(--border);
-}
-@media (prefers-color-scheme: light) {
-    section[data-testid="stSidebar"] {
-        background: rgba(255, 255, 255, 0.5) !important;
-    }
-}
-
-section[data-testid="stSidebar"] .stButton button {
-    width: 100%;
-    border-radius: 12px;
-    border: 1px solid var(--border);
-    background: var(--surface-elev);
-    color: var(--text-primary);
-    transition: all 0.2s ease;
-}
-section[data-testid="stSidebar"] .stButton button:hover {
-    background: var(--surface);
-    border-color: var(--accent);
-    color: var(--accent);
-    transform: translateY(-1px);
-    box-shadow: 0 4px 12px var(--accent-glow);
-}
-
-/* ============================================================
-   Chat Input Box (Modern Floating Glass Pill)
-   ============================================================ */
-[data-testid="stBottom"] {
-    background: transparent !important;
-    padding-bottom: 1.5rem !important;
-    border-top: none !important;
-}
-[data-testid="stBottom"] > div {
-    background: transparent !important;
-    border: none !important;
-}
-
-[data-testid="stChatInput"] {
-    background: transparent !important;
-    border: none !important;
-    padding: 0 !important;
-    max-width: 820px;
-    margin: 0 auto;
-}
-
-[data-testid="stChatInput"] > div {
-    background: rgba(26, 29, 53, 0.85) !important;
-    border: 1px solid rgba(99, 102, 241, 0.35) !important;
-    border-radius: 24px !important;
-    backdrop-filter: blur(16px) !important;
-    -webkit-backdrop-filter: blur(16px) !important;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.06) !important;
-    padding: 4px 10px !important;
-    transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1) !important;
-}
-
-[data-testid="stChatInput"] > div:focus-within {
-    border-color: var(--accent) !important;
-    box-shadow: 0 12px 35px rgba(99, 102, 241, 0.3), 0 0 0 2px var(--accent) !important;
-}
-
-[data-testid="stChatInput"] textarea {
-    background: transparent !important;
-    color: var(--text-primary) !important;
-    font-family: "Inter", sans-serif !important;
-    font-size: 0.96rem !important;
-    border: none !important;
-    box-shadow: none !important;
-    padding-top: 0.4rem !important;
-    padding-bottom: 0.4rem !important;
-}
-
-[data-testid="stChatInput"] textarea::placeholder {
-    color: var(--text-muted) !important;
-}
-
-[data-testid="stChatInput"] button {
-    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%) !important;
-    color: #ffffff !important;
-    border-radius: 50% !important;
-    width: 36px !important;
-    height: 36px !important;
-    border: none !important;
-    box-shadow: 0 2px 10px rgba(99, 102, 241, 0.4) !important;
-    transition: all 0.2s ease !important;
-}
-
-[data-testid="stChatInput"] button:hover {
-    transform: scale(1.08) !important;
-    box-shadow: 0 4px 16px rgba(99, 102, 241, 0.6) !important;
-}
-
-</style>
-"""
-
-
-# ---------------------------------------------------------------------------
-# Core State & Session Helpers
+# Authentication dependencies
 # ---------------------------------------------------------------------------
 
-def _append_message(role: str, content: str) -> None:
-    st.session_state.messages.append({"role": role, "content": content})
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login", auto_error=False)
 
 
-def _load_session(sid: str) -> None:
-    saved = storage.load_history(sid)
-    st.session_state.messages = saved.get("messages", [])
-    st.session_state.title = saved.get("title", "New Chat")
-    st.session_state.tone_label = saved.get("tone_label", DEFAULT_TONE) or DEFAULT_TONE
+def get_db() -> Generator[Session, None, None]:
+    db = SessionLocal()
     try:
-        st.session_state.tone_confidence = float(saved.get("tone_confidence", 0.0))
-    except (TypeError, ValueError):
-        st.session_state.tone_confidence = 0.0
-    st.session_state.chat_session_id = sid
-    st.session_state.loaded_session_id = sid
+        yield db
+    finally:
+        db.close()
 
 
-def _new_session() -> str:
-    sid = uuid.uuid4().hex
-    st.session_state.messages = []
-    st.session_state.title = "New Chat"
-    st.session_state.tone_label = DEFAULT_TONE
-    st.session_state.tone_confidence = 0.0
-    st.session_state.chat_session_id = sid
-    st.session_state.loaded_session_id = sid
-    st.session_state.last_provider_label = "primary"
-    return sid
+def get_current_user_optional(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+) -> User | None:
+    if not token:
+        return None
+    payload = verify_token(token)
+    if not payload:
+        return None
+    username = payload.get("sub")
+    if not username:
+        return None
+    user = get_user_by_username(db, username)
+    return user
 
 
-def _tone_emoji(label: str) -> str:
-    return {
-        "flirtatious": "😉",
-        "excited": "✨",
-        "playful": "😄",
-        "sad": "🤍",
-        "angry": "🧊",
-        "serious": "🎯",
-        "calm": "🌿",
-        "energetic": "⚡",
-        "neutral": "💬",
-    }.get(label, "💬")
+def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+) -> User:
+    user = get_current_user_optional(token, db)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return user
 
 
-def _model_status_html(cfg: dict) -> str:
-    primary = cfg.get("primary", {})
-    fallback = cfg.get("fallback", {})
-    provider = (st.session_state.get("last_provider_label") or "primary").lower()
+# ---------------------------------------------------------------------------
+# Authentication endpoints
+# ---------------------------------------------------------------------------
 
-    if provider == "fallback" and fallback.get("provider"):
-        cls = "status-fallback"
-        text = f"Live · {fallback.get('model') or fallback.get('provider') or 'fallback'}"
-    elif provider == "placeholder":
-        cls = "status-placeholder"
-        text = "Live · placeholder"
+@app.post("/signup", response_model=Token)
+def signup(user_data: UserCreate, db: Session = Depends(get_db)):
+    existing = get_user_by_username(db, user_data.username)
+    if existing:
+        raise HTTPException(status_code=400, detail="Username already taken")
+    user = create_user(
+        db,
+        username=user_data.username,
+        password=user_data.password,
+        first_name=user_data.first_name,
+        last_name=user_data.last_name
+    )
+    if not user:
+        raise HTTPException(status_code=500, detail="Failed to create user")
+    access_token = create_access_token(data={"sub": user.username})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+
+@app.post("/login", response_model=Token)
+def login(login_data: LoginRequest, db: Session = Depends(get_db)):
+    user = authenticate_user(db, login_data.username, login_data.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token = create_access_token(data={"sub": user.username})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@app.post("/tone")
+def get_tone_endpoint(
+    request: ToneRequest,
+    current_user: User | None = Depends(get_current_user_optional),
+):
+    tone = llm.get_last_tone(request.history, request.current_message)
+    return {"label": tone.label, "confidence": tone.confidence}
+
+
+# ---------------------------------------------------------------------------
+# Chat endpoints – hybrid storage
+# ---------------------------------------------------------------------------
+
+def _get_storage_for_user(user: User | None):
+    """Return (storage_module, user_id) for authenticated or None for anonymous."""
+    if user:
+        return ("db", user.id)
+    return ("file", None)
+
+
+def _load_state(user: User | None, session_id: str, db: Session | None = None):
+    if user:
+        # DB
+        state = get_session_state(db, user.id, session_id)
+        return state
     else:
-        cls = "status-live"
-        if primary.get("provider"):
-            text = f"Live · {primary.get('model') or primary.get('provider') or 'primary'}"
-        else:
-            text = "Live · primary"
-    return f'<span class="status-pill {cls}"><span class="dot"></span>{text}</span>'
+        # File
+        state = storage.load_history(session_id)
+        return state
 
 
-def _init_state() -> None:
-    st.session_state.setdefault("messages", [])
-    st.session_state.setdefault("title", "New Chat")
-    st.session_state.setdefault("tone_label", DEFAULT_TONE)
-    st.session_state.setdefault("tone_confidence", 0.0)
-    st.session_state.setdefault("pending_input", None)
-    st.session_state.setdefault("chat_session_id", storage.session_id())
-    st.session_state.setdefault("loaded_session_id", None)
-    st.session_state.setdefault("last_provider_label", "primary")
-
-
-_init_state()
-if st.session_state.loaded_session_id != st.session_state.chat_session_id:
-    _load_session(st.session_state.chat_session_id)
-
-
-def _persist() -> None:
-    storage.save_history(
-        {
-            "messages": st.session_state.messages,
-            "tone_label": st.session_state.tone_label,
-            "tone_confidence": st.session_state.tone_confidence,
-            "title": st.session_state.title,
-        },
-        sid=st.session_state.chat_session_id,
-    )
-
-
-# Inject global CSS
-st.markdown(_CSS, unsafe_allow_html=True)
-
-
-# ---------------------------------------------------------------------------
-# Sidebar UI
-# ---------------------------------------------------------------------------
-
-with st.sidebar:
-    st.markdown(
-        """
-        <div style="padding: 0.5rem 0 1.5rem 0;">
-            <div style="font-size: 1.4rem; font-weight: 800; background: linear-gradient(135deg, var(--accent) 0%, var(--accent-sec) 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">
-                💬 ChatTalk
-            </div>
-            <div style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem;">
-                A premium AI companion experience.
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    cfg = get_config()
-    st.markdown(_model_status_html(cfg), unsafe_allow_html=True)
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    if st.button("＋ New Chat", use_container_width=True, type="primary"):
-        _new_session()
-        st.rerun()
-
-    st.markdown("<br>**Chat History**", unsafe_allow_html=True)
-    sessions = storage.list_sessions()
-    current_sid = st.session_state.chat_session_id
-    session_map = {item["sid"]: item for item in sessions}
-    if current_sid not in session_map:
-        session_map[current_sid] = {
-            "sid": current_sid,
-            "preview": "Current session",
-            "message_count": len(st.session_state.messages),
-            "updated_at": 0.0,
-        }
-    ordered_sessions = [session_map[item["sid"]] for item in sessions]
-    if current_sid not in {item["sid"] for item in ordered_sessions}:
-        ordered_sessions.insert(0, session_map[current_sid])
-
-    for item in ordered_sessions:
-        sid = item["sid"]
-        is_active = (sid == current_sid)
-        icon = "💬" if is_active else "🗨️"
-        title_text = item.get("title") or "New Chat"
-        preview = item.get("preview") or "Empty chat"
-        if title_text == "New Chat" and preview != "Empty chat":
-            label_text = f"{icon} {preview}"
-        else:
-            label_text = f"{icon} {title_text}"
-        
-        btn_type = "primary" if is_active else "secondary"
-        if st.button(label_text, key=f"hist_btn_{sid}", use_container_width=True, type=btn_type):
-            if sid != current_sid:
-                _load_session(sid)
-                st.rerun()
-
-    st.markdown("<br>**Current Tone**", unsafe_allow_html=True)
-    label = st.session_state.tone_label
-    conf = st.session_state.tone_confidence
-    st.markdown(
-        f'<span class="tone-chip">{_tone_emoji(label)} {label.title()} · {int(conf * 100)}%</span>',
-        unsafe_allow_html=True,
-    )
-    
-    st.markdown("<div style='margin-top: 0.5rem;'>", unsafe_allow_html=True)
-    st.progress(min(max(conf, 0.0), 1.0))
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    st.markdown("---")
-    col_a, col_b = st.columns(2)
-    with col_a:
-        if st.button("🧹 Clear", use_container_width=True):
-            st.session_state.messages = []
-            st.session_state.title = "New Chat"
-            st.session_state.tone_label = DEFAULT_TONE
-            st.session_state.tone_confidence = 0.0
-            _persist()
-            st.rerun()
-    with col_b:
-        if st.button("↩️ Undo", use_container_width=True):
-            if st.session_state.messages:
-                st.session_state.messages.pop()
-                tone = get_last_tone(
-                    [m for m in st.session_state.messages if m["role"] == "user"],
-                    current="",
-                )
-                st.session_state.tone_label = tone.label
-                st.session_state.tone_confidence = tone.confidence
-                _persist()
-            st.rerun()
-
-    if st.session_state.messages:
-        transcript = "\n\n".join(
-            f"{m['role'].upper()}: {m['content']}" for m in st.session_state.messages
+def _save_state(user: User | None, session_id: str, state: dict, db: Session | None = None):
+    if user:
+        create_or_update_session(
+            db,
+            user.id,
+            session_id,
+            title=state.get("title", "New Chat"),
+            messages=state.get("messages", []),
+            tone_label=state.get("tone_label", "neutral"),
+            tone_confidence=state.get("tone_confidence", 0.0),
         )
-        st.download_button(
-            "⬇️ Export",
-            data=transcript,
-            file_name="chattalk_transcript.txt",
-            mime="text/plain",
-            use_container_width=True,
-        )
+    else:
+        storage.save_history(state, session_id)
+
+
+def _delete_state(user: User | None, session_id: str, db: Session | None = None):
+    if user:
+        delete_session(db, user.id, session_id)
+    else:
+        storage.clear_history(session_id)
+
+
+def _list_sessions(user: User | None, db: Session | None = None) -> list[dict]:
+    if user:
+        sessions = list_user_sessions(db, user.id)
+        result = []
+        for s in sessions:
+            preview = ""
+            if s.messages:
+                for msg in s.messages:
+                    if msg.get("role") == "user" and msg.get("content"):
+                        preview = msg["content"][:48] + ("..." if len(msg["content"]) > 48 else "")
+                        break
+                if not preview:
+                    preview = "(empty)"
+            result.append({
+                "sid": s.session_id,
+                "title": s.title,
+                "preview": preview,
+                "message_count": len(s.messages),
+                "tone_label": s.tone_label,
+                "updated_at": s.updated_at.timestamp(),
+            })
+        return result
+    else:
+        return storage.list_sessions()
 
 
 # ---------------------------------------------------------------------------
-# Main Content UI
+# API endpoints – now using hybrid storage
 # ---------------------------------------------------------------------------
 
-st.markdown(
-    """
-    <div class="hero-shell">
-        <div class="hero-badge">✨ Now with Streaming</div>
-        <h1 class="hero-title">Welcome to ChatTalk.</h1>
-        <p class="hero-subtitle">Experience a fluid, responsive AI conversation tailored to your tone.</p>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+@app.post("/chat/stream")
+async def chat_stream(
+    request: ChatRequest,
+    current_user: User | None = Depends(get_current_user_optional),
+    db: Session = Depends(get_db),
+):
+    # Ensure session_id exists
+    session_id = request.session_id or str(uuid.uuid4())
 
-# Render history
-if not st.session_state.messages:
-    st.markdown(
-        """
-        <div class="empty-state">
-            <div class="empty-emoji">👋</div>
-            <div class="empty-title">Nothing here yet</div>
-            <div class="empty-hint">Start a conversation by typing a message below, or try a quick prompt.</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    cols = st.columns(3)
-    suggestions = [
-        "Hey, how's it going?",
-        "I'm feeling a little sad today",
-        "I have exciting news!",
-    ]
-    for idx, suggestion in enumerate(suggestions):
-        with cols[idx]:
-            if st.button(suggestion, use_container_width=True, key=f"starter_{idx}"):
-                st.session_state.pending_input = suggestion
-                st.rerun()
-else:
-    for msg in st.session_state.messages:
-        with st.chat_message(msg["role"], avatar="🧑" if msg["role"] == "user" else "💬"):
-            st.markdown(msg["content"])
+    # The streaming generator
+    async def event_generator() -> AsyncGenerator[str, None]:
+        provider_info: dict[str, str] = {"provider": "placeholder"}
+        try:
+            stream = llm.generate_reply_stream(
+                user_message=request.message,
+                history=request.history,
+                result_info=provider_info,
+            )
+            # Yield chunks
+            for chunk in stream:
+                yield json.dumps({"chunk": chunk, "provider": provider_info.get("provider", "unknown")}) + "\n"
+            yield json.dumps({"done": True}) + "\n"
+
+            # After streaming, update session with new history
+            # The client will send updated history via save endpoint.
+            # But we can optionally auto-save; we'll rely on client.
+
+        except Exception as e:
+            yield json.dumps({"error": str(e)}) + "\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
-# Handle input
-if st.session_state.get("pending_input"):
-    prompt = st.session_state.pending_input
-    st.session_state.pending_input = None
-else:
-    prompt = st.chat_input("Say something to ChatTalk…")
-
-if prompt:
-    _append_message("user", prompt)
-    with st.chat_message("user", avatar="🧑"):
-        st.markdown(prompt)
-
-    tone = get_last_tone(st.session_state.messages, current=prompt)
-    st.session_state.tone_label = tone.label
-    st.session_state.tone_confidence = tone.confidence
-
-    with st.chat_message("assistant", avatar="💬"):
-        typing_placeholder = st.empty()
-        typing_placeholder.markdown(
-            '<div class="typing-dots"><span></span><span></span><span></span></div>',
-            unsafe_allow_html=True,
-        )
-        result_info = {"provider": "placeholder"}
-
-        def stream_generator():
-            first_chunk = True
-            for chunk in generate_reply_stream(prompt, st.session_state.messages[:-1], result_info):
-                if first_chunk:
-                    typing_placeholder.empty()
-                    first_chunk = False
-                yield chunk
-
-        response = st.write_stream(stream_generator())
-        typing_placeholder.empty()
-
-    _append_message("assistant", response)
-    st.session_state.last_provider_label = result_info["provider"]
-
-    if st.session_state.get("title", "New Chat") == "New Chat" and len(st.session_state.messages) >= 2:
-        from llm import generate_title
-        new_title = generate_title(st.session_state.messages)
-        st.session_state.title = new_title
-
-    _persist()
-    st.rerun()
+@app.get("/sessions")
+def list_sessions_endpoint(
+    current_user: User | None = Depends(get_current_user_optional),
+    db: Session = Depends(get_db),
+):
+    return _list_sessions(current_user, db)
 
 
-# ---------------------------------------------------------------------------
-# Auto-Scroll + Footer
-# ---------------------------------------------------------------------------
-st.markdown(
-    """
-    <script>
-        const chatContainer = window.parent.document.querySelector('[data-testid="stVerticalBlock"]');
-        if (chatContainer) chatContainer.scrollTop = chatContainer.scrollHeight;
-        const mainScroll = window.parent.document.querySelector('.main');
-        if (mainScroll) mainScroll.scrollTop = mainScroll.scrollHeight;
-    </script>
-    <div style="text-align: center; color: var(--text-dim); font-size: 0.78rem; margin-top: 2rem; padding-bottom: 0.5rem; letter-spacing: 0.02em;">
-        ChatTalk · built with Streamlit · streaming enabled
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+@app.get("/session/{session_id}")
+def load_session_endpoint(
+    session_id: str,
+    current_user: User | None = Depends(get_current_user_optional),
+    db: Session = Depends(get_db),
+):
+    state = _load_state(current_user, session_id, db)
+    return state
+
+
+@app.post("/session/{session_id}")
+def save_session_endpoint(
+    session_id: str,
+    update: SessionUpdate,
+    current_user: User | None = Depends(get_current_user_optional),
+    db: Session = Depends(get_db),
+):
+    state = {
+        "messages": update.messages,
+        "tone_label": update.tone_label,
+        "tone_confidence": update.tone_confidence,
+        "title": update.title,
+    }
+    _save_state(current_user, session_id, state, db)
+    return {"status": "ok", "session_id": session_id}
+
+
+@app.delete("/session/{session_id}")
+def delete_session_endpoint(
+    session_id: str,
+    current_user: User | None = Depends(get_current_user_optional),
+    db: Session = Depends(get_db),
+):
+    _delete_state(current_user, session_id, db)
+    return {"status": "ok", "session_id": session_id}
+
+
+@app.post("/title")
+def generate_title_endpoint(
+    request: TitleRequest,
+    current_user: User | None = Depends(get_current_user_optional),
+):
+    title = llm.generate_title(request.history)
+    return {"title": title}
+
+
+@app.get("/config")
+def get_config(current_user: User | None = Depends(get_current_user_optional)):
+    return llm.get_config()
+
+
+@app.get("/me")
+def get_me(current_user: User | None = Depends(get_current_user_optional)):
+    if current_user:
+        return {"authenticated": True, "username": current_user.username}
+    return {"authenticated": False}
+
+# Serve static frontend
+app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")

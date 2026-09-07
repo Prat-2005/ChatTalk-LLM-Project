@@ -1,3 +1,4 @@
+# prompts.py
 """Prompt templates and tone-detection helpers for ChatTalk.
 
 The system prompt is built dynamically from:
@@ -5,7 +6,7 @@ The system prompt is built dynamically from:
   * a tone label inferred from the user's messages
   * a compact slice of recent conversation history
 
-Design priorities (Step 6 refinements):
+Design priorities:
   * natural, conversational replies
   * mirror the user's tone, slang, and rhythm — but not so literally that
     it feels mocking
@@ -17,18 +18,29 @@ Design priorities (Step 6 refinements):
 
 from __future__ import annotations
 
-import re
 from collections import Counter
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Iterable, Literal
 
+# Tone labels as a union for type checking
+ToneLabel = Literal[
+    "flirtatious",
+    "excited",
+    "playful",
+    "sad",
+    "angry",
+    "serious",
+    "calm",
+    "energetic",
+    "neutral",
+]
 
 # ---------------------------------------------------------------------------
 # Tone detection
 # ---------------------------------------------------------------------------
 
 # Order matters: more specific lexicons are checked first.
-TONE_LEXICONS: dict[str, list[str]] = {
+TONE_LEXICONS: dict[ToneLabel, list[str]] = {
     "flirtatious": [
         "cutie", "cutie pie", "gorgeous", "hottie", "babe", "baby", "love you",
         "miss you", "kiss", "date", "flirt", "sweetheart", "my love", "hot",
@@ -36,95 +48,94 @@ TONE_LEXICONS: dict[str, list[str]] = {
     ],
     "excited": [
         "omg", "oh my god", "wow", "amazing", "incredible", "awesome", "yay",
-        "yes!", "let's go", "finally", "can't wait", "!!", "magnificent", "fantastic", 
+        "yes!", "let's go", "finally", "can't wait", "!!", "magnificent", "fantastic",
         "brilliant", "superb", "excellent", "great", "wonderful", "fabulous",
-        "splendid", "marvelous", "stunning", "phenomenal", "spectacular", "outstanding", "remarkable", 
+        "splendid", "marvelous", "stunning", "phenomenal", "spectacular", "outstanding", "remarkable",
         "terrific", "extraordinary", "mind-blowing", "jaw-dropping", "breathtaking", "unbelievable",
     ],
     "playful": [
         "lol", "lmao", "haha", "hehe", "rofl", "joke", "funny", "tease", "prank", "goof",
         "kidding", "silly", "weird", "haha", "hehe", "hilarious", "amusing", "entertaining",
-        "comical", "witty", "clever", "jocular", "jealous", "mischievous", "naughty", "playful banter", 
+        "comical", "witty", "clever", "jocular", "jealous", "mischievous", "naughty", "playful banter",
         "lighthearted", "whimsical", "jovial", "facetious", "jesting", "bantering", "humorous", "laughable", "fun-loving",
     ],
     "sad": [
         "sad", "down", "depressed", "cry", "crying", "tears", "lonely", "miss",
-        "broken", "hurt", "lost", "tired of", "give up", "hopeless", "pleasant", "unhappy", 
-        "miserable", "sorrowful", "heartbroken", "grief", "melancholy", "despair", "gloomy", 
-        "blue", "dejected", "disheartened", "forlorn", "woeful", "tragic", "disturbed", "upset", 
+        "broken", "hurt", "lost", "tired of", "give up", "hopeless", "pleasant", "unhappy",
+        "miserable", "sorrowful", "heartbroken", "grief", "melancholy", "despair", "gloomy",
+        "blue", "dejected", "disheartened", "forlorn", "woeful", "tragic", "disturbed", "upset",
         "regretful", "remorseful", "disappointed", "discouraged", "dismal",
     ],
     "angry": [
         "angry", "mad", "furious", "pissed", "hate", "annoyed", "stupid", "wtf",
-        "damn", "shut up", "shut it", "rage", "useless", "idiot", "moron", "fool", "dumb", 
-        "frustrated", "irritated", "outraged", "maniac", "enraged", "infuriated", "aggravated", 
+        "damn", "shut up", "shut it", "rage", "useless", "idiot", "moron", "fool", "dumb",
+        "frustrated", "irritated", "outraged", "maniac", "enraged", "infuriated", "aggravated",
         "provoked", "resentful", "vexed", "exasperated", "incensed", "livid", "wrathful", "heated", "cross", "upset",
     ],
     "serious": [
-        "important", "serious", "careful", "concern", "worried", "anxious", "afraid", "scared", 
-        "deadline", "urgent", "asap", "please", "need to", "must", "critical", "vital", "essential", 
-        "pressing", "grave", "weighty", "momentous", "consequential", "significant", "notable", "substantial", 
+        "important", "serious", "careful", "concern", "worried", "anxious", "afraid", "scared",
+        "deadline", "urgent", "asap", "please", "need to", "must", "critical", "vital", "essential",
+        "pressing", "grave", "weighty", "momentous", "consequential", "significant", "notable", "substantial",
         "paramount", "crucial", "pivotal", "decisive", "imperative", "mandatory", "obligatory", "compulsory", "unavoidable", "inescapable",
     ],
     "calm": [
         "calm", "relaxed", "chill", "peaceful", "quiet", "softly", "gentle",
         "it's fine", "no rush", "easy", "slow", "take your time", "breathe", "serene", "tranquil", "composed",
-        "placid", "untroubled", "unperturbed", "collected", "cool-headed", "level-headed", "unflappable", "steady", 
-        "even-tempered", "mellow", "laid-back", "unhurried", "leisurely", "unrushed", "unpressured", "unstrained", 
+        "placid", "untroubled", "unperturbed", "collected", "cool-headed", "level-headed", "unflappable", "steady",
+        "even-tempered", "mellow", "laid-back", "unhurried", "leisurely", "unrushed", "unpressured", "unstrained",
         "unforced", "unagitated", "unexcited", "unflustered",
     ],
     "energetic": [
-        "go go", "let's do it", "pumped", "hyped", "ready", "bring it", "fast", "hurry", "quick", "now", 
-        "right now", "immediately", "instantly", "rapidly", "swiftly", "speedily", "promptly", "briskly", 
+        "go go", "let's do it", "pumped", "hyped", "ready", "bring it", "fast", "hurry", "quick", "now",
+        "right now", "immediately", "instantly", "rapidly", "swiftly", "speedily", "promptly", "briskly",
         "vigorously", "lively", "spirited", "dynamic", "forceful", "powerful", "intense", "frenetic", "exhilarated", "thrilled", "excited", "animated",
     ],
 }
 
 # Emoticon / emoji shorthand → likely tone
-EMOJI_HINTS: dict[str, list[str]] = {
-    'flirtatious': [
-        '😍', '😘', '😏', '😉', '💋', '❤️', '💕', '💖', '💘', '💓', '💗', '💞', '💌', '💟'
+EMOJI_HINTS: dict[ToneLabel, list[str]] = {
+    "flirtatious": [
+        '😍', '😘', '😏', '😉', '💋', '❤️', '💕', '💖', '💘', '💓', '💗', '💞', '💌', '💟',
         '💑', '💏', '💃', '🕺', '💃🏽', '🕺🏽', '💃🏻', '🕺🏻', '💃🏿', '🕺🏿',
     ],
-    'excited': ['🎉', '🎊', '🥳', '🤩', '😃', '😄', '😁', '😆', '😎', '🤗', '🤪', '🤯',
-                '😜', '😝', '😛', '😋', '😺', '😸', '😹', '😻', '😼', '😽', '🙀', '😿',
+    "excited": [
+        '🎉', '🎊', '🥳', '🤩', '😃', '😄', '😁', '😆', '😎', '🤗', '🤪', '🤯',
+        '😜', '😝', '😛', '😋', '😺', '😸', '😹', '😻', '😼', '😽', '🙀', '😿',
     ],
-    'playful': ['😜', '😝', '😛', '😋', '😺', '😸', '😹', '😻', '😼', '😽', '🙀', '😿',
-                '🤪', '🤗', '🤭', '🤫', '🤔', '🤨', '🧐', '😏', '😉', '😎', '😇', '🥰', 
-                '😍', '😘', '😗', '😙', '😚', '😋', '😛', '😜', '😝', '🤪', '🤨', '🧐', '🤓', '😎', '🤩', '🥳',
+    "playful": [
+        '😜', '😝', '😛', '😋', '😺', '😸', '😹', '😻', '😼', '😽', '🙀', '😿',
+        '🤪', '🤗', '🤭', '🤫', '🤔', '🤨', '🧐', '😏', '😉', '😎', '😇', '🥰',
+        '😍', '😘', '😗', '😙', '😚', '😋', '😛', '😜', '😝', '🤪', '🤨', '🧐', '🤓', '😎', '🤩', '🥳',
     ],
-    'sad': ['😢', '😭', '😞', '😔', '😟', '😕', '🙁', '☹️', '😣', '😖', '😫', '😩',
-            '🥺', '😿', '🙀', '😾', '😓', '😥', '😰','😧', '😦', '🤕', '💔' , '🥀'
+    "sad": [
+        '😢', '😭', '😞', '😔', '😟', '😕', '🙁', '☹️', '😣', '😖', '😫', '😩',
+        '🥺', '😿', '🙀', '😾', '😓', '😥', '😰', '😧', '😦', '🤕', '💔', '🥀',
     ],
-    'angry': [
+    "angry": [
         '😡', '😠', '🤬', '😤', '💢', '👿', '💣', '🔥', '😣', '👺',
     ],
-    'serious': [
-        '😐', '😑', '😶', '🤔', '🧐', '😬', '😮', '😯', '🤓', '😶'
+    "serious": [
+        '😐', '😑', '😶', '🤔', '🧐', '😬', '😮', '😯', '🤓', '😶',
     ],
-    'calm': [
-        '😌', '😴', '😪', '😴', '😌', '😎', '🧘', '🛀', '🌿', '🌊', '☀️'
+    "calm": [
+        '😌', '😴', '😪', '😴', '😌', '😎', '🧘', '🛀', '🌿', '🌊', '☀️',
     ],
-    'energetic': [
-        '💪', '🏃', '🏋️', '🚴', '🏄', '🤸', '🤾', '🤹', '🏊', '🏇', '🏂', '⛷️'
+    "energetic": [
+        '💪', '🏃', '🏋️', '🚴', '🏄', '🤸', '🤾', '🤹', '🏊', '🏇', '🏂', '⛷️',
     ],
 }
 
-# Default tone when nothing else matches
-DEFAULT_TONE = "neutral"
+DEFAULT_TONE: ToneLabel = "neutral"
 
-# How many of the most recent user messages to weight heavily
+# Weighting parameters
 RECENT_WINDOW = 3
-# Weight applied to the very first user message (sets initial tone, not too
-# sticky so the assistant can follow mood shifts)
 FIRST_MSG_BONUS = 1.0
-# Weight applied to the most recent user message (lets the tone shift)
 LATEST_MSG_BONUS = 2.0
 
 
 @dataclass
 class ToneSignal:
-    label: str
+    label: ToneLabel
     confidence: float  # 0.0 – 1.0
     reasons: list[str]
 
@@ -144,10 +155,7 @@ def _caps_ratio(text: str) -> float:
 
 
 def _slang_density(text: str) -> float:
-    """Rough proxy for casual / slang-heavy writing (0.0 – 1.0).
-
-    Used to decide how casual the mirrored style should be.
-    """
+    """Rough proxy for casual / slang-heavy writing (0.0 – 1.0)."""
     if not text:
         return 0.0
     slang_markers = [
@@ -161,25 +169,18 @@ def _slang_density(text: str) -> float:
 
 
 def detect_tone(messages: list[str]) -> ToneSignal:
-    """Return the dominant tone across the provided user messages.
-
-    The first message sets the initial tone; later messages can reinforce or
-    shift it. We weight the most recent message(s) a bit higher so the
-    assistant follows the user's current mood rather than getting stuck on
-    the opening.
-    """
+    """Return the dominant tone across the provided user messages."""
     if not messages:
         return ToneSignal(DEFAULT_TONE, 0.0, ["no input"])
 
-    scores: Counter[str] = Counter()
-    reasons: dict[str, list[str]] = {}
+    scores: Counter[ToneLabel] = Counter()
+    reasons: dict[ToneLabel, list[str]] = {}
 
     n = len(messages)
     for idx, msg in enumerate(messages):
         if not msg:
             continue
-        # Recency weight: first message gets a bonus, latest gets a bonus,
-        # and messages in the recent window get a small uplift.
+        # Recency weighting
         if idx == 0:
             weight = FIRST_MSG_BONUS
         elif idx == n - 1:
@@ -193,35 +194,26 @@ def detect_tone(messages: list[str]) -> ToneSignal:
             hits = _count_matches(msg, lexicon)
             if hits:
                 scores[tone] += hits * weight
-                reasons.setdefault(tone, []).append(
-                    f"match in msg #{idx + 1}: {hits}"
-                )
+                reasons.setdefault(tone, []).append(f"match in msg #{idx + 1}: {hits}")
 
         for tone, emojis in EMOJI_HINTS.items():
             for emoji in emojis:
                 if emoji in msg:
                     scores[tone] += 1.0 * weight
-                    reasons.setdefault(tone, []).append(
-                        f"emoji {emoji} in msg #{idx + 1}"
-                    )
+                    reasons.setdefault(tone, []).append(f"emoji {emoji} in msg #{idx + 1}")
 
         excl = msg.count("!")
         if excl >= 2:
             scores["excited"] += 1.0 * weight
-            reasons.setdefault("excited", []).append(
-                f"multiple '!' in msg #{idx + 1}"
-            )
+            reasons.setdefault("excited", []).append(f"multiple '!' in msg #{idx + 1}")
+
         if "?" in msg and len(msg) < 80:
             scores["serious"] += 0.5 * weight
-            reasons.setdefault("serious", []).append(
-                f"short question in msg #{idx + 1}"
-            )
+            reasons.setdefault("serious", []).append(f"short question in msg #{idx + 1}")
 
         if _caps_ratio(msg) > 0.6 and len(msg) > 4:
             scores["angry"] += 1.5 * weight
-            reasons.setdefault("angry", []).append(
-                f"all-caps in msg #{idx + 1}"
-            )
+            reasons.setdefault("angry", []).append(f"all-caps in msg #{idx + 1}")
 
     if not scores:
         return ToneSignal(DEFAULT_TONE, 0.0, ["no signals matched"])
@@ -241,7 +233,7 @@ def detect_tone(messages: list[str]) -> ToneSignal:
 # Tone → reply style guide
 # ---------------------------------------------------------------------------
 
-TONE_STYLE_GUIDE: dict[str, str] = {
+TONE_STYLE_GUIDE: dict[ToneLabel, str] = {
     "flirtatious": (
         "Be extreme, playful, and flirtatious in return. "
         "Cross the line of naughty and teasing, but never creepy. "
@@ -300,22 +292,21 @@ BASE_PERSONA = (
     "good listener. Your response should be human-like chat not AI-generated content, & use emojis. "
     "No bullets, lists, or numbered steps. Avoid repeating the user's last message back to them verbatim. "
     "Your task is to respond to the user in a way that matches their tone, style, and "
-    "emotional state. You are not a therapist, but you are empathetic and supportive. " \
+    "emotional state. You are not a therapist, but you are empathetic and supportive. "
     "Be real with the user don't respond anything that misleads them whether it's topic about any interesting "
-    "topics or facts that must checked in the source before you respond. "
+    "topics or facts that must checked in the source before you respond."
 )
 
-# Slang / style mirroring rules (refined)
+# Slang / style mirroring rules
 STYLE_MIRROR_RULES = (
     "Mirror the user's register: match casual lowercase typing with casual "
     "lowercase replies, match polished prose with polished prose, use emojis "
     "to match the user's tone. Copy their exact words back "
-    "at them. Borrow the vibe, not the script. "
+    "at them. Borrow the vibe, not the script."
 )
 
-# Length rules per tone — a one-liner when they're casual, a fuller answer
-# when they're being serious, etc.
-TONE_LENGTH_GUIDE: dict[str, str] = {
+# Length rules per tone
+TONE_LENGTH_GUIDE: dict[ToneLabel, str] = {
     "flirtatious": "Keep it short and warm — one to three sentences.",
     "excited": "One to three energetic sentences. Don't overdo it.",
     "playful": "One or two sentences. A quick quip beats a long setup.",
@@ -367,6 +358,9 @@ def _slang_mirror_instruction(user_messages: list[str]) -> str:
 # Prompt construction
 # ---------------------------------------------------------------------------
 
+HISTORY_CHAR_BUDGET = 2500
+
+
 def build_system_prompt(tone: ToneSignal) -> str:
     """Compose the system prompt from persona + tone style guide."""
     style = TONE_STYLE_GUIDE.get(tone.label, TONE_STYLE_GUIDE[DEFAULT_TONE])
@@ -386,10 +380,6 @@ def build_system_prompt(tone: ToneSignal) -> str:
         f"{confidence_clause}\n\n"
         f"{GUARD_RAILS}"
     )
-
-
-# Cap how much history we feed back in (rough char budget).
-HISTORY_CHAR_BUDGET = 2500
 
 
 def trim_history(
@@ -415,13 +405,7 @@ def build_messages(
     history: list[dict],
     tone: ToneSignal | None = None,
 ) -> list[dict]:
-    """Assemble the full message list for the model.
-
-    Layout:
-      1) system prompt (persona + tone)
-      2) trimmed prior history (alternating user/assistant)
-      3) new user message
-    """
+    """Assemble the full message list for the model."""
     user_messages_so_far = [
         m["content"] for m in history if m.get("role") == "user"
     ]

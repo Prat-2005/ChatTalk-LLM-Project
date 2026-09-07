@@ -1,4 +1,17 @@
-streamlit>=1.32.0
+# Core framework
+fastapi>=0.110.0
+uvicorn>=0.29.0
+
+# Database & ORM
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.0
+
+# Authentication
+passlib[bcrypt]>=1.7.4
+PyJWT>=2.8.0
+
+# LLM integration (OpenAI-compatible SDK)
+openai>=1.0.0
+
+# Dev / Testing
 pytest>=8.0.0
-# The fallback uses an OpenAI-compatible /chat/completions HTTP endpoint
-# (driven by LLM_API_KEY in .env), so no third-party SDK is required.

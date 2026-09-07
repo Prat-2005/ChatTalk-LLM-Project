@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ChatTalk</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <!-- Auth Modal -->
+  <div id="authModal" class="modal">
+    <div class="modal-content">
+      <span id="closeAuthBtn" class="close">&times;</span>
+      <h2 id="authTitle">Welcome to ChatTalk</h2>
+      
+      <!-- Tabs -->
+      <div class="auth-tabs">
+        <button id="loginTab" class="active">Login</button>
+        <button id="signupTab">Sign Up</button>
+      </div>
+
+      <!-- Login Form -->
+      <div id="loginForm" class="auth-form">
+        <input type="text" id="loginUsername" placeholder="Username" />
+        <input type="password" id="loginPassword" placeholder="Password" />
+        <button id="loginBtn">Login</button>
+      </div>
+
+      <!-- Signup Form -->
+      <div id="signupForm" class="auth-form" style="display:none;">
+        <input type="text" id="signupFirstName" placeholder="First Name" />
+        <input type="text" id="signupLastName" placeholder="Last Name" />
+        <input type="text" id="signupUsername" placeholder="Username" />
+        <input type="password" id="signupPassword" placeholder="Password" />
+        <button id="signupBtn">Create Account</button>
+      </div>
+
+      <div id="authError" class="auth-error"></div>
+    </div>
+  </div>
+
+  <!-- Main App -->
+  <div id="app" style="display:none;width:100%;height:100vh;display:flex;">
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <h2>💬 Conversion History</h2>
+      <div class="session-list" id="sessionList"></div>
+      <div class="sidebar-actions">
+        <button id="newChatBtn">＋ New Chat</button>
+        <button id="deleteChatBtn" class="secondary" style="background-color: red;">🗑 Delete</button>
+        <div style="margin-top:10px;border-top:1px solid #4a5f73;padding-top:10px;display:flex;flex-direction:column;gap:6px;">
+          <div id="userInfo" style="font-size:0.85rem;color:#b0c4de;display:flex;align-items:center;gap:8px;">
+            <span id="userAvatar" class="avatar-small" style="background:#007bff;color:white;width:28px;height:28px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-weight:600;font-size:0.8rem;text-transform:uppercase;">U</span>
+            <span id="userName">Anonymous</span>
+          </div>
+          <button id="authToggleBtn" style="background:#6c757d;border:none;color:white;padding:6px;border-radius:4px;cursor:pointer;">Login</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Chat -->
+    <div class="main">
+      <div class="chat-header">
+        <span class="title" id="chatTitle">New Chat</span>
+        <span class="tone-badge" id="toneBadge">😐 neutral</span>
+      </div>
+      <div class="messages" id="messageContainer"></div>
+      <div class="input-area">
+        <input type="text" id="messageInput" placeholder="Type a message..." />
+        <button id="sendBtn">Send</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/script.js"></script>
+</body>
+</html>
