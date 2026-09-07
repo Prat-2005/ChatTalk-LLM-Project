@@ -1,11 +1,3 @@
-"""LLM interface for ChatTalk.
-
-Provider chain:
-    1) Primary provider (LLM_PROVIDER, default `ollama`).
-    2) If primary fails, try fallback provider (FALLBACK_PROVIDER, default `groq`).
-    3) If everything fails, return an informative error placeholder reply.
-"""
-
 from __future__ import annotations
 
 import json
@@ -408,6 +400,24 @@ def generate_reply(
     result_info: dict[str, str] = {"provider": "placeholder"}
     chunks = list(generate_reply_stream(user_message, history, result_info, primary, fallback))
     return "".join(chunks), result_info["provider"]
+
+
+def generate_title(history: list[dict]) -> str:
+    if not history:
+        return "New Chat"
+    
+    summary_prompt = (
+        "Based on the following conversation, generate a suitable concise title "
+        "(maximum 5 words). Return ONLY the title text, with no quotes or extra formatting.\n\n"
+    )
+    for msg in history[-4:]:
+        summary_prompt += f"{msg['role']}: {msg['content']}\n"
+    
+    reply, _ = generate_reply(summary_prompt, [])
+    title = reply.strip(' "\'\n\r*')
+    if len(title) > 50:
+        title = title[:47] + "..."
+    return title or "New Chat"
 
 
 def get_config() -> dict[str, Any]:

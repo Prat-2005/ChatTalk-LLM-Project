@@ -55,10 +55,13 @@ def _session_path(sid: str) -> Path:
 
 
 def _session_preview(messages: list[dict[str, Any]]) -> str:
+    # Priority 1: Find the first user message with conten
     for msg in messages:
         if msg.get("role") == "user" and msg.get("content"):
             text = str(msg["content"]).strip().replace("\n", " ")
             return text[:48] + ("..." if len(text) > 48 else "")
+
+    # Priority 2: Fallback to the first message with any content
     for msg in messages:
         if msg.get("content"):
             text = str(msg["content"]).strip().replace("\n", " ")
@@ -66,37 +69,34 @@ def _session_preview(messages: list[dict[str, Any]]) -> str:
     return "Empty session"
 
 
-def load_history(sid: str | None = None) -> dict[str, Any]:
+def load_history(sid: str = session_id()) -> dict[str, Any]:  # args: sid otherwise default to current session 'session_id()'
     """Return persisted state for the given session, or a blank state."""
-    sid = sid or session_id()
     path = _session_path(sid)
+    default_state = {"messages": [], "tone_label": "neutral", "tone_confidence": 0.0, "title": "New Chat"}
     if not path.is_file():
-        return {"messages": [], "tone_label": "neutral", "tone_confidence": 0.0}
+        return default_state
     try:
         text = path.read_text(encoding="utf-8")
-        data = json.loads(text)
+        file_data = json.loads(text)
     except (OSError, json.JSONDecodeError):
-        return {"messages": [], "tone_label": "neutral", "tone_confidence": 0.0}
-    if not isinstance(data, dict):
-        return {"messages": [], "tone_label": "neutral", "tone_confidence": 0.0}
-    data.setdefault("messages", [])
-    data.setdefault("tone_label", "neutral")
-    data.setdefault("tone_confidence", 0.0)
-    return data
+        return default_state
+    if not isinstance(file_data, dict):
+        return default_state
+    return default_state | file_data  # type: ignore
 
 
-def save_history(state: dict[str, Any], sid: str | None = None) -> None:
+def save_history(state: dict[str, Any], sid: str = session_id()) -> None:
     """Atomically write the given state to the session file.
 
     Atomic write = write to a temp file in the same directory, then rename.
     This avoids leaving a half-written file if the process is killed.
     """
-    sid = sid or session_id()
     path = _session_path(sid)
     payload = {
         "messages": list(state.get("messages", [])),
         "tone_label": state.get("tone_label", "neutral"),
         "tone_confidence": float(state.get("tone_confidence", 0.0)),
+        "title": state.get("title", "New Chat"),
     }
     try:
         with tempfile.NamedTemporaryFile(
@@ -134,15 +134,15 @@ def list_sessions() -> list[dict[str, Any]]:
                 "message_count": len(messages),
                 "tone_label": loaded.get("tone_label", "neutral"),
                 "preview": _session_preview(messages),
+                "title": loaded.get("title", "New Chat"),
             }
         )
     sessions.sort(key=lambda item: item["updated_at"], reverse=True)
     return sessions
 
 
-def clear_history(sid: str | None = None) -> None:
+def clear_history(sid: str = session_id()) -> None:
     """Delete the persisted state for the given session."""
-    sid = sid or session_id()
     path = _session_path(sid)
     try:
         path.unlink(missing_ok=True)

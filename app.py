@@ -563,6 +563,7 @@ def _append_message(role: str, content: str) -> None:
 def _load_session(sid: str) -> None:
     saved = storage.load_history(sid)
     st.session_state.messages = saved.get("messages", [])
+    st.session_state.title = saved.get("title", "New Chat")
     st.session_state.tone_label = saved.get("tone_label", DEFAULT_TONE) or DEFAULT_TONE
     try:
         st.session_state.tone_confidence = float(saved.get("tone_confidence", 0.0))
@@ -575,6 +576,7 @@ def _load_session(sid: str) -> None:
 def _new_session() -> str:
     sid = uuid.uuid4().hex
     st.session_state.messages = []
+    st.session_state.title = "New Chat"
     st.session_state.tone_label = DEFAULT_TONE
     st.session_state.tone_confidence = 0.0
     st.session_state.chat_session_id = sid
@@ -619,6 +621,7 @@ def _model_status_html(cfg: dict) -> str:
 
 def _init_state() -> None:
     st.session_state.setdefault("messages", [])
+    st.session_state.setdefault("title", "New Chat")
     st.session_state.setdefault("tone_label", DEFAULT_TONE)
     st.session_state.setdefault("tone_confidence", 0.0)
     st.session_state.setdefault("pending_input", None)
@@ -638,6 +641,7 @@ def _persist() -> None:
             "messages": st.session_state.messages,
             "tone_label": st.session_state.tone_label,
             "tone_confidence": st.session_state.tone_confidence,
+            "title": st.session_state.title,
         },
         sid=st.session_state.chat_session_id,
     )
@@ -692,9 +696,13 @@ with st.sidebar:
     for item in ordered_sessions:
         sid = item["sid"]
         is_active = (sid == current_sid)
-        preview = item.get("preview") or "Empty chat"
         icon = "💬" if is_active else "🗨️"
-        label_text = f"{icon} {preview}"
+        title_text = item.get("title") or "New Chat"
+        preview = item.get("preview") or "Empty chat"
+        if title_text == "New Chat" and preview != "Empty chat":
+            label_text = f"{icon} {preview}"
+        else:
+            label_text = f"{icon} {title_text}"
         
         btn_type = "primary" if is_active else "secondary"
         if st.button(label_text, key=f"hist_btn_{sid}", use_container_width=True, type=btn_type):
@@ -719,6 +727,7 @@ with st.sidebar:
     with col_a:
         if st.button("🧹 Clear", use_container_width=True):
             st.session_state.messages = []
+            st.session_state.title = "New Chat"
             st.session_state.tone_label = DEFAULT_TONE
             st.session_state.tone_confidence = 0.0
             _persist()
@@ -830,6 +839,12 @@ if prompt:
 
     _append_message("assistant", response)
     st.session_state.last_provider_label = result_info["provider"]
+
+    if st.session_state.get("title", "New Chat") == "New Chat" and len(st.session_state.messages) >= 2:
+        from llm import generate_title
+        new_title = generate_title(st.session_state.messages)
+        st.session_state.title = new_title
+
     _persist()
     st.rerun()
 
