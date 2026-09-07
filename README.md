@@ -95,9 +95,9 @@ DATABASE_URL=postgresql://user:password@localhost/chattalk
 SECRET_KEY=your-secret-key
 
 # --- Primary LLM provider (Local or Remote) ---
-LLM_PROVIDER=ollama
-LLM_MODEL=llama3.2
-LLM_BASE_URL=http://localhost:11434
+LLM_PROVIDER=YOUR_LOCAL_PROIVDER
+LLM_MODEL=YOUR_LOCAL_MODEL
+LLM_BASE_URL=YOUR_LOCAL_API_KEY
 
 # --- (Optional) Fallback provider ---
 FALLBACK_PROVIDER=YOUR_FALLBACK_PROVIDER
